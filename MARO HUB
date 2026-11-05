@@ -79,7 +79,7 @@ local function invoke(n, ...)
 end
 
 local hasRemote = function(n) return rObj(n) ~= nil end
-local function okRes(r) return type(r) == "table" and r.Ok == true end
+local function okRes(r) return type(r) == "table" and r.Ok == true or r == true end
 
 --=====================================================================
 -- SAFE REQUIRE
@@ -105,7 +105,7 @@ local DataController  = safeReq(Ctrl and Ctrl:FindFirstChild("DataController"))
 local FoodsConfig     = safeReq(Cfg and Cfg:FindFirstChild("FoodsConfig"))
 
 --=====================================================================
--- ECONOMY TABLES
+-- ECONOMY
 --=====================================================================
 local STAND_PRICES = {
     1, 50, 2000, 12000, 100000, 600000, 6000000, 38000000,
@@ -119,7 +119,7 @@ local STAND_PRICES = {
 local FENCE_PRICES = { 40000000, 2e14, 5e19, 1e23, 4.999999999999999e24 }
 
 --=====================================================================
--- MONEY  (returns value, known)
+-- MONEY
 --=====================================================================
 local SUF = { K=1e3,M=1e6,B=1e9,T=1e12,Qa=1e15,Qi=1e18,Sx=1e21,Sp=1e24,
               Oc=1e27,No=1e30,Dc=1e33,Ud=1e36,Dd=1e39 }
@@ -225,44 +225,56 @@ end
 local function busy() return ClientState and ClientState.Busy ~= nil end
 
 --=====================================================================
--- AUTO PERFECT  (reversible)
+-- AUTO PERFECT  (remote-level hook + meter hook)
 --=====================================================================
-local meterOrig = {}
-
-local function runPerfect()
-    return 1.0, { Text = "PERFECT!", Color = Color3.fromRGB(120, 255, 140) }, 20
-end
+local resolveHooked = false
+local origResolve
 
 local function installPerfect()
-    if not ThrowMeter or meterOrig.done then return end
-    meterOrig.done = true
-    if type(ThrowMeter.new) == "function" then
-        meterOrig.new = ThrowMeter.new
-        ThrowMeter.new = function(...)
-            local inst = meterOrig.new(...)
-            if type(inst) == "table" then inst.Run = runPerfect end
-            return inst
+    -- 1. hard hook: whatever value the client sends becomes 1.0
+    if not resolveHooked then
+        local rf = rObj("Throw_Resolve")
+        if rf and type(rf.InvokeServer) == "function" then
+            origResolve = rf.InvokeServer
+            rf.InvokeServer = function(self, v, ...)
+                if S.autoPerfect then return origResolve(self, 1.0, ...) end
+                return origResolve(self, v, ...)
+            end
+            resolveHooked = true
         end
     end
-    local idx = ThrowMeter.__index
-    if type(idx) == "table" and type(idx.Run) == "function" then
-        meterOrig.idxRun = idx.Run
-        idx.Run = runPerfect
-    end
-    if type(ThrowMeter.Run) == "function" then
-        meterOrig.run = ThrowMeter.Run
-        ThrowMeter.Run = runPerfect
-    end
+    -- 2. visual meter override
+    pcall(function()
+        if not ThrowMeter then return end
+        if type(ThrowMeter.new) == "function" and not ThrowMeter.__mp then
+            ThrowMeter.__mp = true
+            local raw = ThrowMeter.new
+            ThrowMeter.new = function(...)
+                local inst = raw(...)
+                if type(inst) == "table" then
+                    inst.Run = function()
+                        return 1.0, { Text = "PERFECT!", Color = Color3.fromRGB(120,255,140) }, 20
+                    end
+                end
+                return inst
+            end
+        end
+    end)
 end
 
 local function uninstallPerfect()
-    if not ThrowMeter or not meterOrig.done then return end
-    if meterOrig.new then ThrowMeter.new = meterOrig.new end
-    local idx = ThrowMeter.__index
-    if idx and meterOrig.idxRun then idx.Run = meterOrig.idxRun end
-    if meterOrig.run then ThrowMeter.Run = meterOrig.run end
-    meterOrig.done = false
-    meterOrig.new, meterOrig.idxRun, meterOrig.run = nil, nil, nil
+    if resolveHooked then
+        local rf = rObj("Throw_Resolve")
+        if rf and origResolve then pcall(function() rf.InvokeServer = origResolve end) end
+        resolveHooked = false
+        origResolve = nil
+    end
+    pcall(function()
+        if not ThrowMeter then return end
+        if ThrowMeter.__mp and ThrowMeter.__rawNew then
+            ThrowMeter.new = ThrowMeter.__rawNew
+        end
+    end)
 end
 
 --=====================================================================
@@ -310,7 +322,7 @@ local function throwOnce()
     if not pastLine then ensurePastLine() end
 
     local sres = invoke("Throw_Start")
-    if not (okRes(sres) or sres == nil) then
+    if not okRes(sres) and sres ~= nil then
         if type(sres) == "table" and sres.Reason == "Cooldown" then
             cooldownEst = math.min(cooldownEst + 0.15, 2.6)
         else
@@ -319,11 +331,8 @@ local function throwOnce()
         return false
     end
 
-    local value = 1.0
-    if not S.autoPerfect then value = math.random(45, 92) / 100 end
-
-    local rres = invoke("Throw_Resolve", value)
-    if not (okRes(rres) or rres == nil) then
+    local rres = invoke("Throw_Resolve", 1.0)
+    if not okRes(rres) and rres ~= nil then
         pastLine = false
         return false
     end
@@ -338,6 +347,7 @@ local function startThrow()
     if not hasRemote("Throw_Start") then notify("Auto Throw", "Throw_Start missing", 4) return end
     R.throw = true
     hookController()
+    installPerfect()
     pcall(invoke, "Player_SetThrowPower", 999999999)
     lastThrow = 0
     cooldownEst = 1.3
@@ -525,7 +535,7 @@ local function startBuy()
 end
 
 --=====================================================================
--- UPGRADES  (money gated, no spam, instant when affordable)
+-- UPGRADES (proximity + money gate, no spam)
 --=====================================================================
 local function readLvl(keys, fb)
     if DataController and DataController.Get then
@@ -537,15 +547,36 @@ local function readLvl(keys, fb)
     return fb
 end
 
+local function findNamed(names)
+    local props = workspace:FindFirstChild("LocalPlotProps")
+    if not props then return nil end
+    for _, d in ipairs(props:GetDescendants()) do
+        if d:IsA("BasePart") then
+            local low = d.Name:lower()
+            for _, n in ipairs(names) do
+                if low:find(n, 1, true) then return d end
+            end
+        end
+    end
+end
+
+local function approach(part)
+    local hrp = root()
+    if not part or not hrp then return end
+    if (hrp.Position - part.Position).Magnitude < 14 then return end
+    hrp.CFrame = part.CFrame + Vector3.new(0, 4, 0)
+    task.wait(0.18)
+end
+
 local POOR = {
     NotEnoughMoney = true, InsufficientFunds = true, Poor = true,
-    NotEnoughCash = true, NoMoney = true, CantAfford = true,
+    NotEnoughCash = true, NoMoney = true, CantAfford = true, NeedMoreMoney = true,
 }
 
-local function upgradePass(key, remote, prices, keys, ref)
+local function upgradePass(key, remote, prices, keys, ref, partNames)
     if os.clock() < upBackoff[key] then return end
-    local lvl = readLvl(keys, ref.value)
 
+    local lvl = readLvl(keys, ref.value)
     for _ = 1, 8 do
         local price = prices[lvl + 1]
         if not price then return end
@@ -555,6 +586,8 @@ local function upgradePass(key, remote, prices, keys, ref)
             upBackoff[key] = os.clock() + 0.5
             return
         end
+
+        approach(findNamed(partNames))
 
         local res = invoke(remote)
         if okRes(res) then
@@ -566,20 +599,20 @@ local function upgradePass(key, remote, prices, keys, ref)
             if POOR[reason] then
                 upBackoff[key] = os.clock() + 0.8
             else
-                upBackoff[key] = os.clock() + 0.3
+                upBackoff[key] = os.clock() + 0.35
             end
             return
         end
     end
 end
 
-local function startUpgrade(key, remote, prices, keys, ref)
+local function startUpgrade(key, remote, prices, keys, ref, partNames)
     if R[key] then return end
     if not hasRemote(remote) then notify("Upgrade", remote .. " missing", 4) return end
     R[key] = true
     task.spawn(function()
         while S[key] and not unloaded do
-            pcall(upgradePass, key, remote, prices, keys, ref)
+            pcall(upgradePass, key, remote, prices, keys, ref, partNames)
             task.wait(S.upgradeDelay)
         end
         R[key] = false
@@ -815,7 +848,7 @@ end)
 
 --=================== TAB 1 : FARM ===================
 local FT = Window:AddTab("Farm", "bolt")
-local fl, fr = L(FT, "Auto Throw"), Rg(FT, "Auto Upgrade")
+local fl, fr = L(FT, "Auto Throw"), Rg(FT, "Train & Upgrade")
 
 toggle(fl, "AutoThrow", "Auto Throw", false, function(v)
     S.autoThrow = v
@@ -825,7 +858,7 @@ end, "Instant throw, perfect resolve, automatic complete")
 toggle(fl, "AutoPerfect", "Auto Perfect", true, function(v)
     S.autoPerfect = v
     if v then installPerfect() else uninstallPerfect() end
-end, "Forces a perfect 1.0 throw value every time")
+end, "Forces a perfect 1.0 value on every throw, even manual ones")
 
 slider(fl, "ThrowDelay", "Throw Delay", 0.01, 0, 0.5, 2, function(v) S.throwDelay = v end)
 
@@ -840,15 +873,33 @@ button(fl, "Set Max Throw Power", function()
     notify("Throw", "Throw power maximized", 2)
 end)
 
+toggle(fr, "AutoTrain", "Auto Train", false, function(v)
+    S.autoTrain = v
+    if v then startTrain() else pcall(invoke, "Training_Stop") end
+end, "Moves to the stand and keeps training alive")
+
+toggle(fr, "AutoTap", "Auto Tap 2x Booster", true, function(v) S.autoTap = v end,
+    "Hits every tap bonus for double boost")
+slider(fr, "TapDelay", "Tap Delay", 0.05, 0.01, 0.4, 2, function(v) S.tapDelay = v end)
+
+divider(fr)
 toggle(fr, "UpStand", "Auto Upgrade Stand", false, function(v)
     S.autoUpStand = v
-    if v then startUpgrade("stand", "Stand_Upgrade", STAND_PRICES, {"Stand","StandLevel","Bar","BarLevel"}, standRef) end
-end, "Upgrades instantly when your money covers the price, never spams")
+    if v then
+        startUpgrade("stand", "Stand_Upgrade", STAND_PRICES,
+            {"Stand","StandLevel","Bar","BarLevel"}, standRef,
+            {"stand","bar","pullup","pull"})
+    end
+end, "Walks to the stand and upgrades the moment money is enough")
 
 toggle(fr, "UpFence", "Auto Upgrade Fence", false, function(v)
     S.autoUpFence = v
-    if v then startUpgrade("fence", "Plot_UpgradeFence", FENCE_PRICES, {"FenceLevel","Fence","PlotFence"}, fenceRef) end
-end, "Upgrades instantly when your money covers the price, never spams")
+    if v then
+        startUpgrade("fence", "Plot_UpgradeFence", FENCE_PRICES,
+            {"FenceLevel","Fence","PlotFence"}, fenceRef,
+            {"fence","sign"})
+    end
+end, "Walks to the fence sign and upgrades the moment money is enough")
 
 slider(fr, "UpDelay", "Upgrade Loop Delay", 0.1, 0.05, 2, 2, function(v) S.upgradeDelay = v end)
 
@@ -987,13 +1038,6 @@ end)
 local GT = Window:AddTab("Settings", "cog")
 local gl, gr = L(GT, "Hub"), Rg(GT, "Status")
 
-local logo = Instance.new("ImageLabel")
-logo.Size = UDim2.new(1, -20, 0, 90)
-logo.BackgroundTransparency = 1
-logo.Image = LOGO
-logo.ScaleType = Enum.ScaleType.Fit
-logo.Parent = gl
-
 label(gl, "MAKO Hub  V" .. HUB_VER)
 label(gl, "Throw Food For Animals")
 divider(gl)
@@ -1085,7 +1129,6 @@ button(gl, "Unload Hub", function()
         S.autoBuy=false S.autoUpStand=false S.autoUpFence=false
         pcall(invoke, "Training_Stop")
         pcall(invoke, "Throw_Cancel")
-        uninstallPerfect()
         if S.fpsBoost then setFps(false) end
         pcall(function() RunService:Set3dRenderingEnabled(true) end)
         if afkConn then afkConn:Disconnect() end
