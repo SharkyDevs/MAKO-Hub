@@ -167,7 +167,7 @@ end
 local function busy() return ClientState and ClientState.Busy ~= nil end
 
 --=====================================================================
--- MONEY  (cached, refreshed in background only)
+-- MONEY (cached)
 --=====================================================================
 local SUF = { K=1e3,M=1e6,B=1e9,T=1e12,Qa=1e15,Qi=1e18,Sx=1e21,Sp=1e24,
               Oc=1e27,No=1e30,Dc=1e33,Ud=1e36,Dd=1e39 }
@@ -233,7 +233,7 @@ task.spawn(function()
 end)
 
 --=====================================================================
--- AUTO PERFECT
+-- AUTO PERFECT (meter override)
 --=====================================================================
 local meterRaw
 
@@ -263,7 +263,7 @@ local function uninstallMeter()
 end
 
 --=====================================================================
--- THROW CONTROLLER HOOK
+-- THROW CONTROLLER HOOK  (always returns the real value)
 --=====================================================================
 local oldStart
 local function hookController()
@@ -271,12 +271,9 @@ local function hookController()
     if type(ThrowController.Start) ~= "function" then return end
     oldStart = ThrowController.Start
     ThrowController.Start = function(...)
-        if S.autoThrow then return end
-        if S.autoPerfect then
-            task.spawn(function() pcall(throwOnce) end)
-            return
-        end
-        return oldStart(...)
+        local ok, a, b, c = pcall(oldStart, ...)
+        if not ok then return nil end
+        return a, b, c
     end
 end
 
@@ -307,6 +304,7 @@ local function ensurePastLine()
 end
 
 function throwOnce()
+    if busy() then return false end
     if os.clock() - lastThrow < cooldownEst then return false end
     if not pastLine then ensurePastLine() end
 
@@ -346,12 +344,16 @@ local function startThrow()
 
     task.spawn(function()
         while S.autoThrow and not unloaded do
-            local remain = cooldownEst - (os.clock() - lastThrow)
-            if remain > 0 then
-                task.wait(math.min(remain, 0.12))
+            if busy() then
+                task.wait(0.06)
             else
-                pcall(throwOnce)
-                task.wait(S.throwDelay)
+                local remain = cooldownEst - (os.clock() - lastThrow)
+                if remain > 0 then
+                    task.wait(math.min(remain, 0.12))
+                else
+                    pcall(throwOnce)
+                    task.wait(S.throwDelay)
+                end
             end
         end
         R.throw = false
@@ -716,15 +718,21 @@ end
 local fpsSaved = {}
 local function setFps(on)
     if on then
-        fpsSaved.q = settings().Rendering.QualityLevel
-        fpsSaved.m = settings().Rendering.MeshPartDetailLevel
-        pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
-        pcall(function() settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level01 end)
-        Lighting.GlobalShadows = false
-        Lighting.FogEnd = 1e7
-        for _, v in ipairs(Lighting:GetChildren()) do
-            if v:IsA("PostEffect") then fpsSaved[v] = v.Enabled v.Enabled = false end
-        end
+        pcall(function()
+            fpsSaved.q = settings().Rendering.QualityLevel
+            fpsSaved.m = settings().Rendering.MeshPartDetailLevel
+            settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+            settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level01
+        end)
+        pcall(function()
+            Lighting.GlobalShadows = false
+            Lighting.FogEnd = 1e7
+        end)
+        pcall(function()
+            for _, v in ipairs(Lighting:GetChildren()) do
+                if v:IsA("PostEffect") then fpsSaved[v] = v.Enabled v.Enabled = false end
+            end
+        end)
         task.spawn(function()
             local n = 0
             for _, d in ipairs(workspace:GetDescendants()) do
@@ -751,10 +759,14 @@ local function setFps(on)
             end
         end)
     else
-        pcall(function() settings().Rendering.QualityLevel = fpsSaved.q end)
-        pcall(function() settings().Rendering.MeshPartDetailLevel = fpsSaved.m end)
-        Lighting.GlobalShadows = true
-        Lighting.FogEnd = 100000
+        pcall(function()
+            if fpsSaved.q then settings().Rendering.QualityLevel = fpsSaved.q end
+            if fpsSaved.m then settings().Rendering.MeshPartDetailLevel = fpsSaved.m end
+        end)
+        pcall(function()
+            Lighting.GlobalShadows = true
+            Lighting.FogEnd = 100000
+        end)
         task.spawn(function()
             local n = 0
             for k, v in pairs(fpsSaved) do
@@ -832,7 +844,7 @@ local function dropdown(b, id, text, vals, def, cb)
     return obj
 end
 local function label(b, t) if b.AddLabel then pcall(function() b:AddLabel(t) end) end end
-local function divider(b) if b:AddDivider then pcall(function() b:AddDivider() end) end end
+local function divider(b) if b.AddDivider then pcall(function() b:AddDivider() end) end end
 
 --=====================================================================
 -- WINDOW
@@ -866,14 +878,8 @@ end, "Instant throw, perfect resolve, automatic complete")
 
 toggle(fl, "AutoPerfect", "Auto Perfect", true, function(v)
     S.autoPerfect = v
-    if v then
-        installMeter()
-        hookController()
-    else
-        uninstallMeter()
-        if not S.autoThrow then unhookController() end
-    end
-end, "Perfect on every throw, including manual ones")
+    if v then installMeter() else uninstallMeter() end
+end, "Perfect value on every throw, including manual ones")
 
 slider(fl, "ThrowDelay", "Throw Delay", 0.01, 0, 0.5, 2, function(v) S.throwDelay = v end)
 
