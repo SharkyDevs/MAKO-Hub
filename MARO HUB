@@ -119,66 +119,6 @@ local STAND_PRICES = {
 local FENCE_PRICES = { 40000000, 2e14, 5e19, 1e23, 4.999999999999999e24 }
 
 --=====================================================================
--- MONEY
---=====================================================================
-local SUF = { K=1e3,M=1e6,B=1e9,T=1e12,Qa=1e15,Qi=1e18,Sx=1e21,Sp=1e24,
-              Oc=1e27,No=1e30,Dc=1e33,Ud=1e36,Dd=1e39 }
-
-local function parseMoney(v)
-    if type(v) == "number" then return v end
-    if type(v) ~= "string" then return 0 end
-    v = v:gsub("[%s,]", "")
-    local n, s = v:match("^([%d%.eE%+%-]+)(%a*)$")
-    if n then
-        local num = tonumber(n) or 0
-        if s ~= "" and SUF[s] then return num * SUF[s] end
-        return num
-    end
-    return tonumber(v) or 0
-end
-
-local moneyLabel
-
-local function findMoneyLabel()
-    local pg = LocalPlayer:FindFirstChild("PlayerGui")
-    if not pg then return nil end
-    for _, d in ipairs(pg:GetDescendants()) do
-        if d:IsA("TextLabel") and (d.Name:lower():find("money") or d.Name:lower():find("cash")) then
-            return d
-        end
-    end
-end
-
-local function getMoney()
-    if DataController and DataController.Get then
-        for _, k in ipairs({"Money", "Cash", "Coins"}) do
-            local ok, v = pcall(function() return DataController:Get(k) end)
-            if ok and type(v) == "number" then return v, true end
-        end
-        if DataController.GetPath then
-            local ok, v = pcall(function() return DataController:GetPath("Money") end)
-            if ok and type(v) == "number" then return v, true end
-        end
-    end
-    local ls = LocalPlayer:FindFirstChild("leaderstats")
-    if ls then
-        for _, c in ipairs(ls:GetChildren()) do
-            if c:IsA("ValueBase") and type(c.Value) == "number" then
-                local n = c.Name:lower()
-                if n:find("money") or n:find("cash") or n:find("coin") then
-                    return c.Value, true
-                end
-            end
-        end
-    end
-    if not moneyLabel or not moneyLabel.Parent then moneyLabel = findMoneyLabel() end
-    if moneyLabel and moneyLabel.Text:find("%d") then
-        return parseMoney(moneyLabel.Text), true
-    end
-    return 0, false
-end
-
---=====================================================================
 -- STATE
 --=====================================================================
 local S = {
@@ -188,7 +128,7 @@ local S = {
     autoUpStand=false, autoUpFence=false,
     antiAfk=false, antiKick=false, noRender=false, fpsBoost=false,
     throwDelay=0.01, tapDelay=0.05, equipDelay=1.2,
-    sellDelay=3.5, buyDelay=0.4, upgradeDelay=0.1,
+    sellDelay=3.5, buyDelay=0.4, upgradeDelay=0.25,
 }
 
 local R = { throw=false, train=false, tap=false, equip=false, sell=false, buy=false, stand=false, fence=false }
@@ -201,6 +141,8 @@ local standRef = { value = 0 }
 local fenceRef = { value = 0 }
 local upBackoff = { stand = 0, fence = 0 }
 local unloaded = false
+local cachedMoney, moneyKnown = 0, false
+local partCache = { stand = nil, fence = nil, at = 0 }
 
 --=====================================================================
 -- HELPERS
@@ -225,32 +167,83 @@ end
 local function busy() return ClientState and ClientState.Busy ~= nil end
 
 --=====================================================================
--- AUTO PERFECT  (remote-level hook + meter hook)
+-- MONEY  (cached, refreshed in background only)
 --=====================================================================
-local resolveHooked = false
-local origResolve
+local SUF = { K=1e3,M=1e6,B=1e9,T=1e12,Qa=1e15,Qi=1e18,Sx=1e21,Sp=1e24,
+              Oc=1e27,No=1e30,Dc=1e33,Ud=1e36,Dd=1e39 }
 
-local function installPerfect()
-    -- 1. hard hook: whatever value the client sends becomes 1.0
-    if not resolveHooked then
-        local rf = rObj("Throw_Resolve")
-        if rf and type(rf.InvokeServer) == "function" then
-            origResolve = rf.InvokeServer
-            rf.InvokeServer = function(self, v, ...)
-                if S.autoPerfect then return origResolve(self, 1.0, ...) end
-                return origResolve(self, v, ...)
-            end
-            resolveHooked = true
+local function parseMoney(v)
+    if type(v) == "number" then return v end
+    if type(v) ~= "string" then return 0 end
+    v = v:gsub("[%s,]", "")
+    local n, s = v:match("^([%d%.eE%+%-]+)(%a*)$")
+    if n then
+        local num = tonumber(n) or 0
+        if s ~= "" and SUF[s] then return num * SUF[s] end
+        return num
+    end
+    return tonumber(v) or 0
+end
+
+local moneyLabel
+
+local function readMoney()
+    if DataController and DataController.Get then
+        for _, k in ipairs({"Money", "Cash", "Coins"}) do
+            local ok, v = pcall(function() return DataController:Get(k) end)
+            if ok and type(v) == "number" then return v, true end
         end
     end
-    -- 2. visual meter override
+    local ls = LocalPlayer:FindFirstChild("leaderstats")
+    if ls then
+        for _, c in ipairs(ls:GetChildren()) do
+            if c:IsA("ValueBase") and type(c.Value) == "number" then
+                local n = c.Name:lower()
+                if n:find("money") or n:find("cash") or n:find("coin") then
+                    return c.Value, true
+                end
+            end
+        end
+    end
+    if not moneyLabel or not moneyLabel.Parent then
+        local pg = LocalPlayer:FindFirstChild("PlayerGui")
+        if pg then
+            for _, d in ipairs(pg:GetDescendants()) do
+                if d:IsA("TextLabel") and (d.Name:lower():find("money") or d.Name:lower():find("cash")) then
+                    moneyLabel = d
+                    break
+                end
+            end
+        end
+    end
+    if moneyLabel and moneyLabel.Text:find("%d") then
+        return parseMoney(moneyLabel.Text), true
+    end
+    return 0, false
+end
+
+local function getMoney() return cachedMoney, moneyKnown end
+
+task.spawn(function()
+    while not unloaded do
+        local ok, v, k = pcall(readMoney)
+        if ok then cachedMoney, moneyKnown = v, k end
+        task.wait(0.5)
+    end
+end)
+
+--=====================================================================
+-- AUTO PERFECT
+--=====================================================================
+local meterRaw
+
+local function installMeter()
     pcall(function()
-        if not ThrowMeter then return end
-        if type(ThrowMeter.new) == "function" and not ThrowMeter.__mp then
-            ThrowMeter.__mp = true
-            local raw = ThrowMeter.new
+        if not ThrowMeter or meterRaw then return end
+        if type(ThrowMeter.new) == "function" then
+            meterRaw = ThrowMeter.new
             ThrowMeter.new = function(...)
-                local inst = raw(...)
+                local inst = meterRaw(...)
                 if type(inst) == "table" then
                     inst.Run = function()
                         return 1.0, { Text = "PERFECT!", Color = Color3.fromRGB(120,255,140) }, 20
@@ -262,18 +255,10 @@ local function installPerfect()
     end)
 end
 
-local function uninstallPerfect()
-    if resolveHooked then
-        local rf = rObj("Throw_Resolve")
-        if rf and origResolve then pcall(function() rf.InvokeServer = origResolve end) end
-        resolveHooked = false
-        origResolve = nil
-    end
+local function uninstallMeter()
     pcall(function()
-        if not ThrowMeter then return end
-        if ThrowMeter.__mp and ThrowMeter.__rawNew then
-            ThrowMeter.new = ThrowMeter.__rawNew
-        end
+        if ThrowMeter and meterRaw then ThrowMeter.new = meterRaw end
+        meterRaw = nil
     end)
 end
 
@@ -287,6 +272,10 @@ local function hookController()
     oldStart = ThrowController.Start
     ThrowController.Start = function(...)
         if S.autoThrow then return end
+        if S.autoPerfect then
+            task.spawn(function() pcall(throwOnce) end)
+            return
+        end
         return oldStart(...)
     end
 end
@@ -317,7 +306,7 @@ local function ensurePastLine()
     return true
 end
 
-local function throwOnce()
+function throwOnce()
     if os.clock() - lastThrow < cooldownEst then return false end
     if not pastLine then ensurePastLine() end
 
@@ -331,7 +320,10 @@ local function throwOnce()
         return false
     end
 
-    local rres = invoke("Throw_Resolve", 1.0)
+    local value = 1.0
+    if not S.autoPerfect then value = math.random(45, 92) / 100 end
+
+    local rres = invoke("Throw_Resolve", value)
     if not okRes(rres) and rres ~= nil then
         pastLine = false
         return false
@@ -346,8 +338,7 @@ local function startThrow()
     if R.throw then return end
     if not hasRemote("Throw_Start") then notify("Auto Throw", "Throw_Start missing", 4) return end
     R.throw = true
-    hookController()
-    installPerfect()
+    installMeter()
     pcall(invoke, "Player_SetThrowPower", 999999999)
     lastThrow = 0
     cooldownEst = 1.3
@@ -364,7 +355,6 @@ local function startThrow()
             end
         end
         R.throw = false
-        unhookController()
         pastLine = false
     end)
 end
@@ -502,6 +492,8 @@ local function foodLocked(i)
     return false
 end
 
+local lastBought = 0
+
 local function buyBestPass()
     if busy() then return end
     local money, known = getMoney()
@@ -513,7 +505,10 @@ local function buyBestPass()
             if price and (not known or money >= price) then
                 if okRes(invoke("Shop_Buy", i)) then
                     invoke("Shop_Equip", i)
-                    notify("Shop", "Bought and equipped " .. (info.Name or ("Food " .. i)), 3)
+                    if i ~= lastBought then
+                        lastBought = i
+                        notify("Shop", "Bought and equipped " .. (info.Name or ("Food " .. i)), 3)
+                    end
                     return
                 end
             end
@@ -535,7 +530,7 @@ local function startBuy()
 end
 
 --=====================================================================
--- UPGRADES (proximity + money gate, no spam)
+-- UPGRADES
 --=====================================================================
 local function readLvl(keys, fb)
     if DataController and DataController.Get then
@@ -547,16 +542,22 @@ local function readLvl(keys, fb)
     return fb
 end
 
-local function findNamed(names)
+local function partsFor()
+    if os.clock() - partCache.at < 3 and (partCache.stand or partCache.fence) then return end
+    partCache.at = os.clock()
+    partCache.stand, partCache.fence = nil, nil
     local props = workspace:FindFirstChild("LocalPlotProps")
-    if not props then return nil end
+    if not props then return end
     for _, d in ipairs(props:GetDescendants()) do
         if d:IsA("BasePart") then
             local low = d.Name:lower()
-            for _, n in ipairs(names) do
-                if low:find(n, 1, true) then return d end
+            if not partCache.stand and (low:find("stand") or low:find("bar") or low:find("pull")) then
+                partCache.stand = d
+            elseif not partCache.fence and (low:find("fence") or low:find("sign")) then
+                partCache.fence = d
             end
         end
+        if partCache.stand and partCache.fence then break end
     end
 end
 
@@ -573,11 +574,11 @@ local POOR = {
     NotEnoughCash = true, NoMoney = true, CantAfford = true, NeedMoreMoney = true,
 }
 
-local function upgradePass(key, remote, prices, keys, ref, partNames)
+local function upgradePass(key, remote, prices, keys, ref)
     if os.clock() < upBackoff[key] then return end
 
     local lvl = readLvl(keys, ref.value)
-    for _ = 1, 8 do
+    for _ = 1, 6 do
         local price = prices[lvl + 1]
         if not price then return end
 
@@ -587,7 +588,8 @@ local function upgradePass(key, remote, prices, keys, ref, partNames)
             return
         end
 
-        approach(findNamed(partNames))
+        partsFor()
+        approach(partCache[key])
 
         local res = invoke(remote)
         if okRes(res) then
@@ -596,23 +598,19 @@ local function upgradePass(key, remote, prices, keys, ref, partNames)
             upBackoff[key] = 0
         else
             local reason = type(res) == "table" and res.Reason or ""
-            if POOR[reason] then
-                upBackoff[key] = os.clock() + 0.8
-            else
-                upBackoff[key] = os.clock() + 0.35
-            end
+            upBackoff[key] = POOR[reason] and (os.clock() + 0.8) or (os.clock() + 0.35)
             return
         end
     end
 end
 
-local function startUpgrade(key, remote, prices, keys, ref, partNames)
+local function startUpgrade(key, remote, prices, keys, ref)
     if R[key] then return end
     if not hasRemote(remote) then notify("Upgrade", remote .. " missing", 4) return end
     R[key] = true
     task.spawn(function()
         while S[key] and not unloaded do
-            pcall(upgradePass, key, remote, prices, keys, ref, partNames)
+            pcall(upgradePass, key, remote, prices, keys, ref)
             task.wait(S.upgradeDelay)
         end
         R[key] = false
@@ -730,17 +728,26 @@ local function setFps(on)
         task.spawn(function()
             local n = 0
             for _, d in ipairs(workspace:GetDescendants()) do
-                if d:IsA("Decal") or d:IsA("Texture") or d:IsA("SurfaceAppearance") then
-                    fpsSaved[d] = { t = "tr", v = d.Transparency } d.Transparency = 1
-                elseif d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam") then
-                    fpsSaved[d] = { t = "en", v = d.Enabled } d.Enabled = false
-                elseif d:IsA("MeshPart") and d.TextureID ~= "" then
-                    fpsSaved[d] = { t = "tex", v = d.TextureID } d.TextureID = ""
-                elseif d:IsA("BasePart") then
-                    fpsSaved[d] = { t = "mat", v = d.Material } d.Material = Enum.Material.SmoothPlastic
-                end
+                pcall(function()
+                    if d:IsA("SurfaceAppearance") then
+                        fpsSaved[d] = { t = "spa", v = d.Parent }
+                        d.Parent = nil
+                    elseif d:IsA("Decal") or d:IsA("Texture") then
+                        fpsSaved[d] = { t = "tr", v = d.Transparency }
+                        d.Transparency = 1
+                    elseif d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam") then
+                        fpsSaved[d] = { t = "en", v = d.Enabled }
+                        d.Enabled = false
+                    elseif d:IsA("MeshPart") and d.TextureID ~= "" then
+                        fpsSaved[d] = { t = "tex", v = d.TextureID }
+                        d.TextureID = ""
+                    elseif d:IsA("BasePart") then
+                        fpsSaved[d] = { t = "mat", v = d.Material }
+                        d.Material = Enum.Material.SmoothPlastic
+                    end
+                end)
                 n = n + 1
-                if n % 150 == 0 then task.wait() end
+                if n % 200 == 0 then task.wait() end
             end
         end)
     else
@@ -751,14 +758,17 @@ local function setFps(on)
         task.spawn(function()
             local n = 0
             for k, v in pairs(fpsSaved) do
-                if typeof(k) == "Instance" and k.Parent then
-                    if type(v) == "boolean" then pcall(function() k.Enabled = v end)
-                    elseif v.t == "tr" then pcall(function() k.Transparency = v.v end)
-                    elseif v.t == "tex" then pcall(function() k.TextureID = v.v end)
-                    elseif v.t == "mat" then pcall(function() k.Material = v.v end) end
+                if typeof(k) == "Instance" then
+                    pcall(function()
+                        if type(v) == "boolean" then k.Enabled = v
+                        elseif v.t == "tr" then k.Transparency = v.v
+                        elseif v.t == "tex" then k.TextureID = v.v
+                        elseif v.t == "mat" then k.Material = v.v
+                        elseif v.t == "spa" and v.v then k.Parent = v.v end
+                    end)
                 end
                 n = n + 1
-                if n % 150 == 0 then task.wait() end
+                if n % 200 == 0 then task.wait() end
             end
         end)
         fpsSaved = {}
@@ -822,7 +832,7 @@ local function dropdown(b, id, text, vals, def, cb)
     return obj
 end
 local function label(b, t) if b.AddLabel then pcall(function() b:AddLabel(t) end) end end
-local function divider(b) if b.AddDivider then pcall(function() b:AddDivider() end) end end
+local function divider(b) if b:AddDivider then pcall(function() b:AddDivider() end) end end
 
 --=====================================================================
 -- WINDOW
@@ -843,7 +853,6 @@ task.spawn(function()
     end
     pcall(function() Library.AccentColor = ACCENT end)
     pcall(function() Library.ThemeManager.AccentColor = ACCENT end)
-    pcall(function() Library:SetAccentColor(ACCENT) end)
 end)
 
 --=================== TAB 1 : FARM ===================
@@ -857,8 +866,14 @@ end, "Instant throw, perfect resolve, automatic complete")
 
 toggle(fl, "AutoPerfect", "Auto Perfect", true, function(v)
     S.autoPerfect = v
-    if v then installPerfect() else uninstallPerfect() end
-end, "Forces a perfect 1.0 value on every throw, even manual ones")
+    if v then
+        installMeter()
+        hookController()
+    else
+        uninstallMeter()
+        if not S.autoThrow then unhookController() end
+    end
+end, "Perfect on every throw, including manual ones")
 
 slider(fl, "ThrowDelay", "Throw Delay", 0.01, 0, 0.5, 2, function(v) S.throwDelay = v end)
 
@@ -885,23 +900,15 @@ slider(fr, "TapDelay", "Tap Delay", 0.05, 0.01, 0.4, 2, function(v) S.tapDelay =
 divider(fr)
 toggle(fr, "UpStand", "Auto Upgrade Stand", false, function(v)
     S.autoUpStand = v
-    if v then
-        startUpgrade("stand", "Stand_Upgrade", STAND_PRICES,
-            {"Stand","StandLevel","Bar","BarLevel"}, standRef,
-            {"stand","bar","pullup","pull"})
-    end
-end, "Walks to the stand and upgrades the moment money is enough")
+    if v then startUpgrade("stand", "Stand_Upgrade", STAND_PRICES, {"Stand","StandLevel","Bar","BarLevel"}, standRef) end
+end, "Walks to the stand, upgrades only when money is enough")
 
 toggle(fr, "UpFence", "Auto Upgrade Fence", false, function(v)
     S.autoUpFence = v
-    if v then
-        startUpgrade("fence", "Plot_UpgradeFence", FENCE_PRICES,
-            {"FenceLevel","Fence","PlotFence"}, fenceRef,
-            {"fence","sign"})
-    end
-end, "Walks to the fence sign and upgrades the moment money is enough")
+    if v then startUpgrade("fence", "Plot_UpgradeFence", FENCE_PRICES, {"FenceLevel","Fence","PlotFence"}, fenceRef) end
+end, "Walks to the fence sign, upgrades only when money is enough")
 
-slider(fr, "UpDelay", "Upgrade Loop Delay", 0.1, 0.05, 2, 2, function(v) S.upgradeDelay = v end)
+slider(fr, "UpDelay", "Upgrade Loop Delay", 0.25, 0.1, 2, 2, function(v) S.upgradeDelay = v end)
 
 divider(fr)
 button(fr, "Upgrade Stand Once", function() invoke("Stand_Upgrade") end)
@@ -979,11 +986,6 @@ button(sr, "Sell Selected Pet", function()
     if not id then notify("Pets", "Refresh the list first", 3) return end
     pcall(invoke, "Plot_SellAnimal", id)
     notify("Pets", "Sold " .. key, 2)
-    task.wait(0.5)
-    pcall(function()
-        local list = buildPetList()
-        if petDropdown then petDropdown:SetValues(list) end
-    end)
 end)
 
 button(sr, "Sell Every Pet Listed", function()
@@ -1129,11 +1131,13 @@ button(gl, "Unload Hub", function()
         S.autoBuy=false S.autoUpStand=false S.autoUpFence=false
         pcall(invoke, "Training_Stop")
         pcall(invoke, "Throw_Cancel")
+        uninstallMeter()
+        unhookController()
         if S.fpsBoost then setFps(false) end
         pcall(function() RunService:Set3dRenderingEnabled(true) end)
         if afkConn then afkConn:Disconnect() end
         rejoinOn = false
-        task.wait(0.25)
+        task.wait(0.3)
         pcall(function() Library:Unload() end)
         if getgenv then getgenv().MakoHub = nil end
     end)
@@ -1153,7 +1157,8 @@ end)
 --=====================================================================
 -- INIT
 --=====================================================================
-installPerfect()
+installMeter()
+hookController()
 standRef.value = readLvl({"Stand","StandLevel","Bar","BarLevel"}, 0)
 fenceRef.value = readLvl({"FenceLevel","Fence","PlotFence"}, 0)
 
