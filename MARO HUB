@@ -18,6 +18,49 @@ local HUB_VER  = "1.0.0"
 local LOGO     = "rbxassetid://130594491959936"
 local ACCENT   = Color3.fromRGB(0, 170, 255)
 
+--=====================================================================
+-- IDENTITY PROBE
+--=====================================================================
+local CHOSEN_IDENTITY
+
+local function hasInstanceCap()
+    local ok, obj = pcall(Instance.new, "Frame")
+    if ok and obj then pcall(function() obj:Destroy() end) return true end
+    return false
+end
+
+if type(setthreadidentity) == "function" then
+    for _, id in ipairs({7, 8, 2}) do
+        if pcall(setthreadidentity, id) and hasInstanceCap() then
+            CHOSEN_IDENTITY = id
+            break
+        end
+    end
+    if not CHOSEN_IDENTITY then
+        pcall(setthreadidentity, 8)
+        CHOSEN_IDENTITY = 8
+    end
+else
+    CHOSEN_IDENTITY = 8
+end
+
+--=====================================================================
+-- CLONEREF GUARD
+--=====================================================================
+do
+    local raw = rawget(getfenv(), "cloneref") or cloneref
+    if type(raw) == "function" then
+        local safe = function(obj)
+            if obj == nil then return nil end
+            local ok, res = pcall(raw, obj)
+            if ok then return res end
+            return obj
+        end
+        pcall(function() cloneref = safe end)
+        pcall(function() getgenv().cloneref = safe end)
+    end
+end
+
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService        = game:GetService("RunService")
@@ -78,18 +121,38 @@ local function invoke(n, ...)
     return nil
 end
 
+local function fire(n, ...)
+    local a = {...}
+    local r = rObj(n)
+    if r then
+        if r:IsA("RemoteEvent") then
+            pcall(function() r:FireServer(unpack(a)) end)
+        else
+            pcall(function() r:InvokeServer(unpack(a)) end)
+        end
+    end
+end
+
 local hasRemote = function(n) return rObj(n) ~= nil end
 local function okRes(r) return type(r) == "table" and r.Ok == true or r == true end
 
 --=====================================================================
--- SAFE REQUIRE
+-- MODULES
 --=====================================================================
 local function safeReq(inst)
     if not inst then return nil end
-    local has = type(setthreadidentity) == "function"
-    if has then pcall(setthreadidentity, 2) end
-    local ok, v = pcall(require, inst)
-    if has then pcall(setthreadidentity, 8) end
+    local prev = CHOSEN_IDENTITY
+    local ok, v
+    if type(setthreadidentity) == "function" then
+        for _, id in ipairs({2, 7, 8}) do
+            pcall(setthreadidentity, id)
+            ok, v = pcall(require, inst)
+            if ok then break end
+        end
+        pcall(setthreadidentity, prev or 8)
+    else
+        ok, v = pcall(require, inst)
+    end
     if ok then return v end
 end
 
@@ -129,6 +192,7 @@ local S = {
     antiAfk=false, antiKick=false, noRender=false, fpsBoost=false,
     throwDelay=0.01, tapDelay=0.05, equipDelay=1.2,
     sellDelay=3.5, buyDelay=0.4, upgradeDelay=0.25,
+    keybind = Enum.KeyCode.RightShift,
 }
 
 local R = { throw=false, train=false, tap=false, equip=false, sell=false, buy=false, stand=false, fence=false }
@@ -140,9 +204,11 @@ local crossLineCache
 local standRef = { value = 0 }
 local fenceRef = { value = 0 }
 local upBackoff = { stand = 0, fence = 0 }
+local lastApproach = 0
 local unloaded = false
 local cachedMoney, moneyKnown = 0, false
 local partCache = { stand = nil, fence = nil, at = 0 }
+local ownedFoods = {}
 
 --=====================================================================
 -- HELPERS
@@ -166,8 +232,17 @@ end
 
 local function busy() return ClientState and ClientState.Busy ~= nil end
 
+local function shortNum(n)
+    local units = { {1e36,"Dd"},{1e33,"Dc"},{1e30,"No"},{1e27,"Oc"},{1e24,"Sp"},
+                    {1e21,"Sx"},{1e18,"Qi"},{1e15,"Qa"},{1e12,"T"},{1e9,"B"},{1e6,"M"},{1e3,"K"} }
+    for _, u in ipairs(units) do
+        if n >= u[1] then return string.format("%.1f%s", n / u[1], u[2]) end
+    end
+    return tostring(math.floor(n))
+end
+
 --=====================================================================
--- MONEY (cached)
+-- MONEY
 --=====================================================================
 local SUF = { K=1e3,M=1e6,B=1e9,T=1e12,Qa=1e15,Qi=1e18,Sx=1e21,Sp=1e24,
               Oc=1e27,No=1e30,Dc=1e33,Ud=1e36,Dd=1e39 }
@@ -233,7 +308,7 @@ task.spawn(function()
 end)
 
 --=====================================================================
--- AUTO PERFECT (meter override)
+-- AUTO PERFECT
 --=====================================================================
 local meterRaw
 
@@ -263,16 +338,27 @@ local function uninstallMeter()
 end
 
 --=====================================================================
--- THROW CONTROLLER HOOK  (always returns the real value)
+-- THROW CONTROLLER HOOK
+--   naka-on ang Auto Throw  -> hindi na patakbuhin ang client sequence
+--   patay  ang Auto Throw  -> normal na takbo (Auto Perfect ang bahala)
 --=====================================================================
 local oldStart
+local function dummySeq()
+    local d = { Run = function() return 1.0 end }
+    return setmetatable(d, { __call = function() return 1.0 end })
+end
+
 local function hookController()
     if oldStart or not ThrowController then return end
     if type(ThrowController.Start) ~= "function" then return end
     oldStart = ThrowController.Start
     ThrowController.Start = function(...)
+        if S.autoThrow then
+            task.spawn(function() pcall(throwOnce) end)
+            return dummySeq()
+        end
         local ok, a, b, c = pcall(oldStart, ...)
-        if not ok then return nil end
+        if not ok then return dummySeq() end
         return a, b, c
     end
 end
@@ -284,7 +370,7 @@ local function unhookController()
 end
 
 --=====================================================================
--- THROW CORE
+-- THROW CORE  (auto complete = Throw_Complete fired instantly)
 --=====================================================================
 local function ensurePastLine()
     local hrp = root()
@@ -327,7 +413,7 @@ function throwOnce()
         return false
     end
 
-    invoke("Throw_Complete")
+    fire("Throw_Complete")   -- auto complete, walang hintay
     lastThrow = os.clock()
     return true
 end
@@ -344,16 +430,12 @@ local function startThrow()
 
     task.spawn(function()
         while S.autoThrow and not unloaded do
-            if busy() then
-                task.wait(0.06)
+            local remain = cooldownEst - (os.clock() - lastThrow)
+            if remain > 0 then
+                task.wait(math.min(remain, 0.1))
             else
-                local remain = cooldownEst - (os.clock() - lastThrow)
-                if remain > 0 then
-                    task.wait(math.min(remain, 0.12))
-                else
-                    pcall(throwOnce)
-                    task.wait(S.throwDelay)
-                end
+                pcall(throwOnce)
+                task.wait(S.throwDelay)
             end
         end
         R.throw = false
@@ -436,7 +518,7 @@ local function startTrain()
 end
 
 --=====================================================================
--- EQUIP / SELL / BUY
+-- EQUIP / SELL
 --=====================================================================
 local function equipOnce()
     if busy() then return end
@@ -471,6 +553,9 @@ local function startSell()
     end)
 end
 
+--=====================================================================
+-- FOOD
+--=====================================================================
 local function foodAll()
     if FoodsConfig and FoodsConfig.GetAny then
         local ok, n = pcall(function() return FoodsConfig.CountAll() end)
@@ -494,27 +579,55 @@ local function foodLocked(i)
     return false
 end
 
-local lastBought = 0
+local function foodName(i)
+    local info = foodInfo(i)
+    return info and info.Name or ("Food " .. i)
+end
 
-local function buyBestPass()
-    if busy() then return end
-    local money, known = getMoney()
-    for i = foodAll(), 1, -1 do
-        if not S.autoBuy then return end
-        if not foodLocked(i) then
-            local info = foodInfo(i)
-            local price = info and tonumber(info.Price)
-            if price and (not known or money >= price) then
-                if okRes(invoke("Shop_Buy", i)) then
-                    invoke("Shop_Equip", i)
-                    if i ~= lastBought then
-                        lastBought = i
-                        notify("Shop", "Bought and equipped " .. (info.Name or ("Food " .. i)), 3)
-                    end
-                    return
-                end
-            end
+-- owned mula sa save data
+local function isOwned(i)
+    if ownedFoods[i] then return true end
+    if DataController and DataController.GetPath then
+        local ok, v = pcall(function() return DataController:GetPath("OwnedFoods." .. i) end)
+        if ok and v == true then
+            ownedFoods[i] = true
+            return true
         end
+    end
+    return false
+end
+
+local function highestOwned()
+    local hi = 0
+    for i = 1, foodAll() do
+        if isOwned(i) and i > hi then hi = i end
+    end
+    return hi
+end
+
+-- susunod na food pagkatapos ng huling nabili
+local function nextFood()
+    local start = highestOwned() + 1
+    for i = start, foodAll() do
+        if not foodLocked(i) then return i end
+    end
+end
+
+local function buyNextPass()
+    if busy() then return end
+    local i = nextFood()
+    if not i then return end
+    local info = foodInfo(i)
+    local price = info and tonumber(info.Price)
+    if not price then return end
+
+    local money, known = getMoney()
+    if known and money < price then return end
+
+    if okRes(invoke("Shop_Buy", i)) then
+        ownedFoods[i] = true
+        invoke("Shop_Equip", i)
+        notify("Shop", "Bought and equipped " .. (info.Name or ("Food " .. i)), 3)
     end
 end
 
@@ -524,7 +637,7 @@ local function startBuy()
     R.buy = true
     task.spawn(function()
         while S.autoBuy and not unloaded do
-            pcall(buyBestPass)
+            pcall(buyNextPass)
             task.wait(S.buyDelay)
         end
         R.buy = false
@@ -553,7 +666,7 @@ local function partsFor()
     for _, d in ipairs(props:GetDescendants()) do
         if d:IsA("BasePart") then
             local low = d.Name:lower()
-            if not partCache.stand and (low:find("stand") or low:find("bar") or low:find("pull")) then
+            if not partCache.stand and (low:find("stand") or low:find("pull")) then
                 partCache.stand = d
             elseif not partCache.fence and (low:find("fence") or low:find("sign")) then
                 partCache.fence = d
@@ -566,9 +679,11 @@ end
 local function approach(part)
     local hrp = root()
     if not part or not hrp then return end
-    if (hrp.Position - part.Position).Magnitude < 14 then return end
+    if (hrp.Position - part.Position).Magnitude < 16 then return end
+    if os.clock() - lastApproach < 1.5 then return end
+    lastApproach = os.clock()
     hrp.CFrame = part.CFrame + Vector3.new(0, 4, 0)
-    task.wait(0.18)
+    task.wait(0.15)
 end
 
 local POOR = {
@@ -576,8 +691,8 @@ local POOR = {
     NotEnoughCash = true, NoMoney = true, CantAfford = true, NeedMoreMoney = true,
 }
 
-local function upgradePass(key, remote, prices, keys, ref)
-    if os.clock() < upBackoff[key] then return end
+local function upgradePass(cacheKey, remote, prices, keys, ref)
+    if os.clock() < upBackoff[cacheKey] then return end
 
     local lvl = readLvl(keys, ref.value)
     for _ = 1, 6 do
@@ -586,36 +701,36 @@ local function upgradePass(key, remote, prices, keys, ref)
 
         local money, known = getMoney()
         if known and money < price then
-            upBackoff[key] = os.clock() + 0.5
+            upBackoff[cacheKey] = os.clock() + 0.5
             return
         end
 
         partsFor()
-        approach(partCache[key])
+        approach(partCache[cacheKey])
 
         local res = invoke(remote)
         if okRes(res) then
             lvl = lvl + 1
             ref.value = lvl
-            upBackoff[key] = 0
+            upBackoff[cacheKey] = 0
         else
             local reason = type(res) == "table" and res.Reason or ""
-            upBackoff[key] = POOR[reason] and (os.clock() + 0.8) or (os.clock() + 0.35)
+            upBackoff[cacheKey] = POOR[reason] and (os.clock() + 0.8) or (os.clock() + 0.35)
             return
         end
     end
 end
 
-local function startUpgrade(key, remote, prices, keys, ref)
-    if R[key] then return end
+local function startUpgrade(stateKey, cacheKey, remote, prices, keys, ref)
+    if R[cacheKey] then return end
     if not hasRemote(remote) then notify("Upgrade", remote .. " missing", 4) return end
-    R[key] = true
+    R[cacheKey] = true
     task.spawn(function()
-        while S[key] and not unloaded do
-            pcall(upgradePass, key, remote, prices, keys, ref)
+        while S[stateKey] and not unloaded do
+            pcall(upgradePass, cacheKey, remote, prices, keys, ref)
             task.wait(S.upgradeDelay)
         end
-        R[key] = false
+        R[cacheKey] = false
     end)
 end
 
@@ -815,29 +930,29 @@ local function setAntiKick(on)
 end
 
 --=====================================================================
--- UI HELPERS
+-- UI HELPERS  (callback laging function)
 --=====================================================================
 local function L(t, n) return t.AddLeftGroupbox and t:AddLeftGroupbox(n) or t:AddGroupbox(n) end
 local function Rg(t, n) return t.AddRightGroupbox and t:AddRightGroupbox(n) or t:AddGroupbox(n) end
 
 local function toggle(b, id, text, def, cb, tip)
-    local cfg = {Text=text, Name=text, Default=def, Tooltip=tip, Callback=cb}
+    local cfg = {Text=text, Name=text, Default=def, Tooltip=tip, Callback=cb or function() end}
     if not pcall(function() b:AddToggle(id, cfg) end) then pcall(function() b:AddToggle(cfg) end) end
 end
 local function slider(b, id, text, def, mn, mx, rd, cb)
-    local cfg = {Text=text, Name=text, Default=def, Min=mn, Max=mx, Rounding=rd, Callback=cb}
+    local cfg = {Text=text, Name=text, Default=def, Min=mn, Max=mx, Rounding=rd, Callback=cb or function() end}
     if not pcall(function() b:AddSlider(id, cfg) end) then pcall(function() b:AddSlider(cfg) end) end
 end
 local function button(b, text, cb)
-    local cfg = {Text=text, Name=text, Func=cb}
+    local cfg = {Text=text, Name=text, Func=cb or function() end}
     if not pcall(function() b:AddButton(text, cfg) end) then pcall(function() b:AddButton(cfg) end) end
 end
 local function input(b, id, text, def, cb)
-    local cfg = {Text=text, Name=text, Default=def, Finished=true, Callback=cb}
+    local cfg = {Text=text, Name=text, Default=def, Finished=true, Callback=cb or function() end}
     if not pcall(function() b:AddInput(id, cfg) end) then pcall(function() b:AddInput(cfg) end) end
 end
 local function dropdown(b, id, text, vals, def, cb)
-    local cfg = {Text=text, Name=text, Values=vals, Default=def, Callback=cb}
+    local cfg = {Text=text, Name=text, Values=vals, Default=def, Callback=cb or function() end}
     local ok, obj
     ok = pcall(function() obj = b:AddDropdown(id, cfg) end)
     if not ok then pcall(function() obj = b:AddDropdown(cfg) end) end
@@ -846,13 +961,22 @@ end
 local function label(b, t) if b.AddLabel then pcall(function() b:AddLabel(t) end) end end
 local function divider(b) if b.AddDivider then pcall(function() b:AddDivider() end) end end
 
+local keyPickerWorks = false
+local function keyPicker(b, id, text, def, cb)
+    local cfg = {Text=text, Name=text, Default=def, Mode="Toggle", Callback=cb or function() end}
+    local ok = pcall(function() b:AddKeyPicker(id, cfg) end)
+    if not ok then ok = pcall(function() b:AddKeyPicker(cfg) end) end
+    if ok then keyPickerWorks = true end
+    return ok
+end
+
 --=====================================================================
 -- WINDOW
 --=====================================================================
 local Window = Library:CreateWindow({
     Title = "MAKO Hub",
     Subtitle = "Throw Food For Animals  ·  V" .. HUB_VER,
-    Icon = "utensils",
+    Icon = LOGO,
     ShowConsoleButton = false,
     Resizable = true,
 })
@@ -874,12 +998,12 @@ local fl, fr = L(FT, "Auto Throw"), Rg(FT, "Train & Upgrade")
 toggle(fl, "AutoThrow", "Auto Throw", false, function(v)
     S.autoThrow = v
     if v then startThrow() end
-end, "Instant throw, perfect resolve, automatic complete")
+end, "Instant throw, perfect resolve, auto complete")
 
 toggle(fl, "AutoPerfect", "Auto Perfect", true, function(v)
     S.autoPerfect = v
     if v then installMeter() else uninstallMeter() end
-end, "Perfect value on every throw, including manual ones")
+end, "Perfect value on every throw")
 
 slider(fl, "ThrowDelay", "Throw Delay", 0.01, 0, 0.5, 2, function(v) S.throwDelay = v end)
 
@@ -906,12 +1030,12 @@ slider(fr, "TapDelay", "Tap Delay", 0.05, 0.01, 0.4, 2, function(v) S.tapDelay =
 divider(fr)
 toggle(fr, "UpStand", "Auto Upgrade Stand", false, function(v)
     S.autoUpStand = v
-    if v then startUpgrade("stand", "Stand_Upgrade", STAND_PRICES, {"Stand","StandLevel","Bar","BarLevel"}, standRef) end
+    if v then startUpgrade("autoUpStand", "stand", "Stand_Upgrade", STAND_PRICES, {"Stand","StandLevel","Bar","BarLevel"}, standRef) end
 end, "Walks to the stand, upgrades only when money is enough")
 
 toggle(fr, "UpFence", "Auto Upgrade Fence", false, function(v)
     S.autoUpFence = v
-    if v then startUpgrade("fence", "Plot_UpgradeFence", FENCE_PRICES, {"FenceLevel","Fence","PlotFence"}, fenceRef) end
+    if v then startUpgrade("autoUpFence", "fence", "Plot_UpgradeFence", FENCE_PRICES, {"FenceLevel","Fence","PlotFence"}, fenceRef) end
 end, "Walks to the fence sign, upgrades only when money is enough")
 
 slider(fr, "UpDelay", "Upgrade Loop Delay", 0.25, 0.1, 2, 2, function(v) S.upgradeDelay = v end)
@@ -924,36 +1048,66 @@ button(fr, "Upgrade Fence Once", function() invoke("Plot_UpgradeFence") end)
 local ST = Window:AddTab("Shop", "shopping-cart")
 local sl, sr = L(ST, "Auto Buy Best Food"), Rg(ST, "Pets")
 
-toggle(sl, "AutoBuy", "Auto Buy Best Food", false, function(v)
+toggle(sl, "AutoBuy", "Auto Buy Next Food", false, function(v)
     S.autoBuy = v
     if v then startBuy() end
-end, "Buys the highest tier your budget allows and equips it instantly")
+end, "Buys the food right after your last owned one, then equips it")
 
 slider(sl, "BuyDelay", "Buy Delay", 0.4, 0.1, 2, 2, function(v) S.buyDelay = v end)
 
-button(sl, "Show Best Affordable Food", function()
-    local money = getMoney()
-    for i = foodAll(), 1, -1 do
-        if not foodLocked(i) then
-            local info = foodInfo(i)
-            local price = info and tonumber(info.Price)
-            if price and money >= price then
-                notify("Shop", "Best: " .. (info.Name or ("Food " .. i)) .. " · Tier " .. tostring(info.Tier), 5)
-                return
-            end
-        end
+button(sl, "Show Next Food", function()
+    local i = nextFood()
+    if not i then notify("Shop", "Nothing left to buy", 4) return end
+    local info = foodInfo(i)
+    local price = info and tonumber(info.Price) or 0
+    local money, known = getMoney()
+    if not known then notify("Shop", "Money not detected", 4) return end
+
+    if money >= price then
+        notify("Shop", "Next: " .. (info.Name or ("Food " .. i)) .. " · affordable (" .. shortNum(price) .. ")", 6)
+    else
+        notify("Shop", "Next: " .. (info.Name or ("Food " .. i)) .. " · short by " .. shortNum(price - money), 6)
     end
-    notify("Shop", "Not enough money for any food", 4)
 end)
 
 divider(sl)
-label(sl, "Buy by food index")
-input(sl, "FoodIdx", "Food Index", "1", function(v) S.foodIdx = tonumber(v) or 1 end)
-button(sl, "Buy And Equip Index", function()
-    local n = S.foodIdx or 1
-    if okRes(invoke("Shop_Buy", n)) then
-        invoke("Shop_Equip", n)
-        notify("Shop", "Bought and equipped", 2)
+label(sl, "Buy by food name")
+
+local foodNames, foodIndex = {}, {}
+local function refreshFoodNames()
+    foodNames, foodIndex = {}, {}
+    for i = 1, foodAll() do
+        local info = foodInfo(i)
+        local disp = (info and info.Name or ("Food " .. i)) .. " · " .. shortNum(tonumber(info and info.Price) or 0)
+        foodNames[#foodNames + 1] = disp
+        foodIndex[disp] = i
+    end
+    if #foodNames == 0 then foodNames = { "No food found" } end
+end
+
+local foodDropdown = dropdown(sl, "FoodPick", "Food", { "Loading..." }, "Loading...", function(v)
+    S.foodPick = v
+end)
+
+button(sl, "Refresh Food List", function()
+    refreshFoodNames()
+    if foodDropdown then
+        if not pcall(function() foodDropdown:SetValues(foodNames) end) then
+            pcall(function() foodDropdown.Values = foodNames end)
+        end
+    end
+    notify("Shop", #foodNames .. " food(s) listed", 3)
+end)
+
+button(sl, "Buy And Equip Selected", function()
+    local idx = S.foodPick and foodIndex[S.foodPick]
+    if not idx then notify("Shop", "Refresh the list and pick a food", 3) return end
+    if okRes(invoke("Shop_Buy", idx)) then
+        ownedFoods[idx] = true
+        invoke("Shop_Equip", idx)
+        notify("Shop", "Bought and equipped " .. foodName(idx), 3)
+    else
+        notify("Shop", "Cannot buy that food", 3)
     end
 end)
 
@@ -1044,12 +1198,21 @@ end)
 
 --=================== TAB 4 : SETTINGS ===================
 local GT = Window:AddTab("Settings", "cog")
-local gl, gr = L(GT, "Hub"), Rg(GT, "Status")
+local gl, gr = L(GT, "Hub"), Rg(GT, "Live Status")
 
 label(gl, "MAKO Hub  V" .. HUB_VER)
 label(gl, "Throw Food For Animals")
 divider(gl)
 
+label(gl, "UI Keybind - press the key, then click the box")
+keyPicker(gl, "Keybind", "Toggle UI Key", "RightShift", function(v)
+    local kc = type(v) == "string" and Enum.KeyCode[v] or v
+    if typeof(kc) == "EnumItem" then
+        S.keybind = kc
+    end
+end)
+
+divider(gl)
 button(gl, "PANIC (Disable Everything)", function()
     for k in pairs(R) do R[k] = false end
     S.autoThrow=false S.autoTrain=false S.autoEquip=false S.autoSell=false
@@ -1149,15 +1312,44 @@ button(gl, "Unload Hub", function()
     end)
 end)
 
-label(gr, "UI Toggle Key : RIGHT SHIFT")
+-- live status
+local statusActivity = gr.AddLabel and select(1, pcall(function() return gr:AddLabel("Idle") end))
+local statusMoney
+
+local actLabel
+local moneyLabelObj
+
+pcall(function() actLabel = gr:AddLabel("Activity : Idle") end)
+pcall(function() moneyLabelObj = gr:AddLabel("Money : -") end)
+
+local function setText(obj, txt)
+    if not obj then return end
+    if not pcall(function() obj:SetText(txt) end) then
+        pcall(function() obj.Text = txt end)
+    end
+end
+
+task.spawn(function()
+    while not unloaded do
+        local act = "Idle"
+        if S.autoThrow then act = "Farming (Auto Throw)"
+        elseif S.autoTrain then act = "Training"
+        elseif S.autoBuy or S.autoSell or S.autoEquip or S.autoUpStand or S.autoUpFence then act = "Automating" end
+
+        setText(actLabel, "Activity : " .. act)
+        local money, known = getMoney()
+        setText(moneyLabelObj, "Money : " .. (known and shortNum(money) or "-"))
+        task.wait(1)
+    end
+end)
+
+label(gr, "Identity : " .. tostring(CHOSEN_IDENTITY))
 label(gr, "Remotes : " .. (RemotesFolder and "OK" or "MISSING"))
-label(gr, "ClientState : " .. (ClientState and "OK" or "NO"))
-label(gr, "ThrowMeter : " .. (ThrowMeter and "OK" or "NO"))
-label(gr, "DataController : " .. (DataController and "OK" or "NO"))
 
 UserInputService.InputBegan:Connect(function(i, gp)
     if gp then return end
-    if i.KeyCode == Enum.KeyCode.RightShift then pcall(function() Library:Toggle() end) end
+    if keyPickerWorks then return end
+    if i.KeyCode == S.keybind then pcall(function() Library:Toggle() end) end
 end)
 
 --=====================================================================
@@ -1167,9 +1359,17 @@ installMeter()
 hookController()
 standRef.value = readLvl({"Stand","StandLevel","Bar","BarLevel"}, 0)
 fenceRef.value = readLvl({"FenceLevel","Fence","PlotFence"}, 0)
+task.spawn(function()
+    refreshFoodNames()
+    if foodDropdown then
+        if not pcall(function() foodDropdown:SetValues(foodNames) end) then
+            pcall(function() foodDropdown.Values = foodNames end)
+        end
+    end
+end)
 
 task.delay(1, function()
     if unloaded then return end
-    notify("MAKO Hub", "Loaded. Press RIGHT SHIFT to toggle the UI.", 5)
+    notify("MAKO Hub", "Loaded. Press " .. tostring(S.keybind.Name) .. " to toggle the UI.", 5)
 end)
-print("[MAKO] V" .. HUB_VER .. " loaded")
+print("[MAKO] V" .. HUB_VER .. " loaded | identity " .. tostring(CHOSEN_IDENTITY))
