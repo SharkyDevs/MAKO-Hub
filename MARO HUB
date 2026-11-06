@@ -5,7 +5,7 @@
     ██║╚██╔╝██║██╔══██║██╔═██╗ ██║   ██║    ██╔══██║██║   ██║██╔══██╗
     ██║ ╚═╝ ██║██║  ██║██║  ██╗╚██████╔╝    ██║  ██║╚██████╔╝██████╔╝
     ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝     ╚═╝  ╚═╝ ╚═════╝ ╚═════╝
-    MAKO Hub  V1.0.0   |   Throw Food For Animals   |   Obsidian
+    MAKO Hub  V1.1.0   |   Throw Food For Animals   |   Obsidian
 ]]
 
 if getgenv and getgenv().MakoHub then
@@ -13,33 +13,29 @@ if getgenv and getgenv().MakoHub then
     getgenv().MakoHub = nil
 end
 
-local PLACE_ID = 120219252362013
-local HUB_VER  = "1.0.0"
-local LOGO     = "rbxassetid://130594491959936"
-local ACCENT   = Color3.fromRGB(0, 170, 255)
+local PLACE_ID   = 120219252362013
+local GAME_NAME  = "Throw Food For Animals"
+local HUB_VER    = "1.1.0"
+local LOGO       = "rbxassetid://130594491959936"
+local DISCORD_IMG = "rbxassetid://7252686258"
+local INVITE_LINK = "https://discord.gg/XndUu744x"
+local LINK_LIFETIME = 30 * 24 * 60 * 60
+local ACCENT     = Color3.fromRGB(0, 170, 255)
 
 --=====================================================================
 -- IDENTITY PROBE
 --=====================================================================
 local CHOSEN_IDENTITY
-
 local function hasInstanceCap()
     local ok, obj = pcall(Instance.new, "Frame")
     if ok and obj then pcall(function() obj:Destroy() end) return true end
     return false
 end
-
 if type(setthreadidentity) == "function" then
     for _, id in ipairs({7, 8, 2}) do
-        if pcall(setthreadidentity, id) and hasInstanceCap() then
-            CHOSEN_IDENTITY = id
-            break
-        end
+        if pcall(setthreadidentity, id) and hasInstanceCap() then CHOSEN_IDENTITY = id break end
     end
-    if not CHOSEN_IDENTITY then
-        pcall(setthreadidentity, 8)
-        CHOSEN_IDENTITY = 8
-    end
+    if not CHOSEN_IDENTITY then pcall(setthreadidentity, 8) CHOSEN_IDENTITY = 8 end
 else
     CHOSEN_IDENTITY = 8
 end
@@ -125,11 +121,8 @@ local function fire(n, ...)
     local a = {...}
     local r = rObj(n)
     if r then
-        if r:IsA("RemoteEvent") then
-            pcall(function() r:FireServer(unpack(a)) end)
-        else
-            pcall(function() r:InvokeServer(unpack(a)) end)
-        end
+        if r:IsA("RemoteEvent") then pcall(function() r:FireServer(unpack(a)) end)
+        else pcall(function() r:InvokeServer(unpack(a)) end) end
     end
 end
 
@@ -180,6 +173,8 @@ local STAND_PRICES = {
     6e43, 2.2e44, 6e44, 2.4e45, 2.5e47, 1e49, 1e50, 3.5e50, 1e51, 4e51,
 }
 local FENCE_PRICES = { 40000000, 2e14, 5e19, 1e23, 4.999999999999999e24 }
+
+local PERFECT_VALUE = 0.99
 
 --=====================================================================
 -- STATE
@@ -274,9 +269,7 @@ local function readMoney()
         for _, c in ipairs(ls:GetChildren()) do
             if c:IsA("ValueBase") and type(c.Value) == "number" then
                 local n = c.Name:lower()
-                if n:find("money") or n:find("cash") or n:find("coin") then
-                    return c.Value, true
-                end
+                if n:find("money") or n:find("cash") or n:find("coin") then return c.Value, true end
             end
         end
     end
@@ -285,15 +278,12 @@ local function readMoney()
         if pg then
             for _, d in ipairs(pg:GetDescendants()) do
                 if d:IsA("TextLabel") and (d.Name:lower():find("money") or d.Name:lower():find("cash")) then
-                    moneyLabel = d
-                    break
+                    moneyLabel = d break
                 end
             end
         end
     end
-    if moneyLabel and moneyLabel.Text:find("%d") then
-        return parseMoney(moneyLabel.Text), true
-    end
+    if moneyLabel and moneyLabel.Text:find("%d") then return parseMoney(moneyLabel.Text), true end
     return 0, false
 end
 
@@ -308,7 +298,7 @@ task.spawn(function()
 end)
 
 --=====================================================================
--- AUTO PERFECT
+-- AUTO PERFECT  (0.99 lagi)
 --=====================================================================
 local meterRaw
 
@@ -321,7 +311,7 @@ local function installMeter()
                 local inst = meterRaw(...)
                 if type(inst) == "table" then
                     inst.Run = function()
-                        return 1.0, { Text = "PERFECT!", Color = Color3.fromRGB(120,255,140) }, 20
+                        return PERFECT_VALUE, { Text = "PERFECT!", Color = Color3.fromRGB(120,255,140) }, 20
                     end
                 end
                 return inst
@@ -339,13 +329,11 @@ end
 
 --=====================================================================
 -- THROW CONTROLLER HOOK
---   naka-on ang Auto Throw  -> hindi na patakbuhin ang client sequence
---   patay  ang Auto Throw  -> normal na takbo (Auto Perfect ang bahala)
 --=====================================================================
 local oldStart
 local function dummySeq()
-    local d = { Run = function() return 1.0 end }
-    return setmetatable(d, { __call = function() return 1.0 end })
+    local d = { Run = function() return PERFECT_VALUE end }
+    return setmetatable(d, { __call = function() return PERFECT_VALUE end })
 end
 
 local function hookController()
@@ -370,7 +358,7 @@ local function unhookController()
 end
 
 --=====================================================================
--- THROW CORE  (auto complete = Throw_Complete fired instantly)
+-- THROW CORE
 --=====================================================================
 local function ensurePastLine()
     local hrp = root()
@@ -404,7 +392,7 @@ function throwOnce()
         return false
     end
 
-    local value = 1.0
+    local value = PERFECT_VALUE
     if not S.autoPerfect then value = math.random(45, 92) / 100 end
 
     local rres = invoke("Throw_Resolve", value)
@@ -413,7 +401,7 @@ function throwOnce()
         return false
     end
 
-    fire("Throw_Complete")   -- auto complete, walang hintay
+    fire("Throw_Complete")
     lastThrow = os.clock()
     return true
 end
@@ -431,12 +419,8 @@ local function startThrow()
     task.spawn(function()
         while S.autoThrow and not unloaded do
             local remain = cooldownEst - (os.clock() - lastThrow)
-            if remain > 0 then
-                task.wait(math.min(remain, 0.1))
-            else
-                pcall(throwOnce)
-                task.wait(S.throwDelay)
-            end
+            if remain > 0 then task.wait(math.min(remain, 0.1))
+            else pcall(throwOnce) task.wait(S.throwDelay) end
         end
         R.throw = false
         pastLine = false
@@ -584,15 +568,11 @@ local function foodName(i)
     return info and info.Name or ("Food " .. i)
 end
 
--- owned mula sa save data
 local function isOwned(i)
     if ownedFoods[i] then return true end
     if DataController and DataController.GetPath then
         local ok, v = pcall(function() return DataController:GetPath("OwnedFoods." .. i) end)
-        if ok and v == true then
-            ownedFoods[i] = true
-            return true
-        end
+        if ok and v == true then ownedFoods[i] = true return true end
     end
     return false
 end
@@ -605,10 +585,8 @@ local function highestOwned()
     return hi
 end
 
--- susunod na food pagkatapos ng huling nabili
 local function nextFood()
-    local start = highestOwned() + 1
-    for i = start, foodAll() do
+    for i = highestOwned() + 1, foodAll() do
         if not foodLocked(i) then return i end
     end
 end
@@ -666,11 +644,8 @@ local function partsFor()
     for _, d in ipairs(props:GetDescendants()) do
         if d:IsA("BasePart") then
             local low = d.Name:lower()
-            if not partCache.stand and (low:find("stand") or low:find("pull")) then
-                partCache.stand = d
-            elseif not partCache.fence and (low:find("fence") or low:find("sign")) then
-                partCache.fence = d
-            end
+            if not partCache.stand and (low:find("stand") or low:find("pull")) then partCache.stand = d
+            elseif not partCache.fence and (low:find("fence") or low:find("sign")) then partCache.fence = d end
         end
         if partCache.stand and partCache.fence then break end
     end
@@ -693,21 +668,14 @@ local POOR = {
 
 local function upgradePass(cacheKey, remote, prices, keys, ref)
     if os.clock() < upBackoff[cacheKey] then return end
-
     local lvl = readLvl(keys, ref.value)
     for _ = 1, 6 do
         local price = prices[lvl + 1]
         if not price then return end
-
         local money, known = getMoney()
-        if known and money < price then
-            upBackoff[cacheKey] = os.clock() + 0.5
-            return
-        end
-
+        if known and money < price then upBackoff[cacheKey] = os.clock() + 0.5 return end
         partsFor()
         approach(partCache[cacheKey])
-
         local res = invoke(remote)
         if okRes(res) then
             lvl = lvl + 1
@@ -853,20 +821,15 @@ local function setFps(on)
             for _, d in ipairs(workspace:GetDescendants()) do
                 pcall(function()
                     if d:IsA("SurfaceAppearance") then
-                        fpsSaved[d] = { t = "spa", v = d.Parent }
-                        d.Parent = nil
+                        fpsSaved[d] = { t = "spa", v = d.Parent } d.Parent = nil
                     elseif d:IsA("Decal") or d:IsA("Texture") then
-                        fpsSaved[d] = { t = "tr", v = d.Transparency }
-                        d.Transparency = 1
+                        fpsSaved[d] = { t = "tr", v = d.Transparency } d.Transparency = 1
                     elseif d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam") then
-                        fpsSaved[d] = { t = "en", v = d.Enabled }
-                        d.Enabled = false
+                        fpsSaved[d] = { t = "en", v = d.Enabled } d.Enabled = false
                     elseif d:IsA("MeshPart") and d.TextureID ~= "" then
-                        fpsSaved[d] = { t = "tex", v = d.TextureID }
-                        d.TextureID = ""
+                        fpsSaved[d] = { t = "tex", v = d.TextureID } d.TextureID = ""
                     elseif d:IsA("BasePart") then
-                        fpsSaved[d] = { t = "mat", v = d.Material }
-                        d.Material = Enum.Material.SmoothPlastic
+                        fpsSaved[d] = { t = "mat", v = d.Material } d.Material = Enum.Material.SmoothPlastic
                     end
                 end)
                 n = n + 1
@@ -930,7 +893,40 @@ local function setAntiKick(on)
 end
 
 --=====================================================================
--- UI HELPERS  (callback laging function)
+-- DISCORD LINK EXPIRY (30 days)
+--=====================================================================
+local EXPIRY_FILE = "MakoHub_discord_expiry.txt"
+local expiry = 0
+
+local function loadExpiry()
+    local ok, raw = pcall(function() return readfile(EXPIRY_FILE) end)
+    if ok and raw then
+        local n = tonumber(raw)
+        if n and n > 0 then
+            expiry = n
+            return
+        end
+    end
+    expiry = os.time() + LINK_LIFETIME
+    pcall(function() writefile(EXPIRY_FILE, tostring(expiry)) end)
+end
+
+local function timeLeft()
+    return expiry - os.time()
+end
+
+local function expiryText()
+    local left = timeLeft()
+    if left <= 0 then return "Expired" end
+    local d = math.floor(left / 86400)
+    local h = math.floor((left % 86400) / 3600)
+    if d > 0 then return d .. "d " .. h .. "h left" end
+    local m = math.floor((left % 3600) / 60)
+    return h .. "h " .. m .. "m left"
+end
+
+--=====================================================================
+-- UI HELPERS
 --=====================================================================
 local function L(t, n) return t.AddLeftGroupbox and t:AddLeftGroupbox(n) or t:AddGroupbox(n) end
 local function Rg(t, n) return t.AddRightGroupbox and t:AddRightGroupbox(n) or t:AddGroupbox(n) end
@@ -975,7 +971,7 @@ end
 --=====================================================================
 local Window = Library:CreateWindow({
     Title = "MAKO Hub",
-    Subtitle = "Throw Food For Animals  ·  V" .. HUB_VER,
+    Subtitle = GAME_NAME .. "  ·  V" .. HUB_VER,
     Icon = LOGO,
     ShowConsoleButton = false,
     Resizable = true,
@@ -991,7 +987,205 @@ task.spawn(function()
     pcall(function() Library.ThemeManager.AccentColor = ACCENT end)
 end)
 
---=================== TAB 1 : FARM ===================
+--=================== TAB 1 : MAIN ===================
+local MT = Window:AddTab("Main", "house")
+local ml, mr = L(MT, "Profile"), Rg(MT, "Community")
+
+-- profile
+local avatarHolder = Instance.new("Frame")
+avatarHolder.Size = UDim2.new(1, -20, 0, 96)
+avatarHolder.BackgroundColor3 = Color3.fromRGB(20, 22, 30)
+avatarHolder.BackgroundTransparency = 0.25
+avatarHolder.BorderSizePixel = 0
+pcall(function()
+    if typeof(ml) == "Instance" then
+        avatarHolder.Parent = ml
+    end
+end)
+pcall(function()
+    local c = Instance.new("UICorner", avatarHolder)
+    c.CornerRadius = UDim.new(0, 8)
+    local s = Instance.new("UIStroke", avatarHolder)
+    s.Color = ACCENT
+    s.Thickness = 1
+    s.Transparency = 0.35
+end)
+
+task.spawn(function()
+    local img = Instance.new("ImageLabel")
+    img.Size = UDim2.fromOffset(72, 72)
+    img.Position = UDim2.new(0, 12, 0.5, -36)
+    img.BackgroundColor3 = Color3.fromRGB(30, 34, 44)
+    img.BorderSizePixel = 0
+    img.ScaleType = Enum.ScaleType.Crop
+    pcall(function() Instance.new("UICorner", img).CornerRadius = UDim.new(0, 8) end)
+    pcall(function()
+        local ok, url = pcall(function()
+            return Players:GetUserThumbnailAsync(LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+        end)
+        if ok and url then img.Image = url end
+    end)
+    img.Parent = avatarHolder
+
+    local user = Instance.new("TextLabel")
+    user.Size = UDim2.new(1, -100, 0, 22)
+    user.Position = UDim2.fromOffset(94, 22)
+    user.BackgroundTransparency = 1
+    user.Font = Enum.Font.GothamBold
+    user.TextSize = 16
+    user.TextColor3 = Color3.fromRGB(255, 255, 255)
+    user.TextXAlignment = Enum.TextXAlignment.Left
+    user.Text = LocalPlayer.DisplayName
+    user.Parent = avatarHolder
+
+    local tag = Instance.new("TextLabel")
+    tag.Size = UDim2.new(1, -100, 0, 18)
+    tag.Position = UDim2.fromOffset(94, 44)
+    tag.BackgroundTransparency = 1
+    tag.Font = Enum.Font.Gotham
+    tag.TextSize = 12
+    tag.TextColor3 = Color3.fromRGB(150, 160, 175)
+    tag.TextXAlignment = Enum.TextXAlignment.Left
+    tag.Text = "@" .. LocalPlayer.Name
+    tag.Parent = avatarHolder
+
+    local gameLbl = Instance.new("TextLabel")
+    gameLbl.Size = UDim2.new(1, -100, 0, 18)
+    gameLbl.Position = UDim2.fromOffset(94, 62)
+    gameLbl.BackgroundTransparency = 1
+    gameLbl.Font = Enum.Font.GothamMedium
+    gameLbl.TextSize = 11
+    gameLbl.TextColor3 = ACCENT
+    gameLbl.TextXAlignment = Enum.TextXAlignment.Left
+    gameLbl.Text = "Playing: " .. GAME_NAME
+    gameLbl.Parent = avatarHolder
+end)
+
+divider(ml)
+label(ml, "Changelog  ·  V" .. HUB_VER)
+label(ml, "Added")
+label(ml, "  • Main tab with profile and community")
+label(ml, "  • Discord server panel with copy button")
+label(ml, "  • Live activity and money status")
+label(ml, "  • Customisable UI keybind picker")
+label(ml, "Fixed")
+label(ml, "  • Auto Perfect now resolves at 0.99")
+label(ml, "  • Auto Buy follows the next food only")
+label(ml, "  • Auto Upgrade no longer spams")
+label(ml, "  • Throw sequence no longer doubles")
+label(ml, "  • Sandboxed module errors resolved")
+
+-- discord
+local discHolder = Instance.new("Frame")
+discHolder.Size = UDim2.new(1, -20, 0, 132)
+discHolder.BackgroundColor3 = Color3.fromRGB(20, 22, 30)
+discHolder.BackgroundTransparency = 0.25
+discHolder.BorderSizePixel = 0
+pcall(function()
+    if typeof(mr) == "Instance" then discHolder.Parent = mr end
+end)
+pcall(function()
+    Instance.new("UICorner", discHolder).CornerRadius = UDim.new(0, 8)
+    local s = Instance.new("UIStroke", discHolder)
+    s.Color = Color3.fromRGB(88, 101, 242)
+    s.Thickness = 1
+    s.Transparency = 0.25
+end)
+
+task.spawn(function()
+    local ico = Instance.new("ImageLabel")
+    ico.Size = UDim2.fromOffset(34, 34)
+    ico.Position = UDim2.fromOffset(12, 10)
+    ico.BackgroundTransparency = 1
+    ico.Image = DISCORD_IMG
+    ico.ScaleType = Enum.ScaleType.Fit
+    ico.Parent = discHolder
+
+    local ttl = Instance.new("TextLabel")
+    ttl.Size = UDim2.new(1, -60, 0, 20)
+    ttl.Position = UDim2.fromOffset(54, 14)
+    ttl.BackgroundTransparency = 1
+    ttl.Font = Enum.Font.GothamBold
+    ttl.TextSize = 14
+    ttl.TextColor3 = Color3.fromRGB(140, 150, 255)
+    ttl.TextXAlignment = Enum.TextXAlignment.Left
+    ttl.Text = "MAKO Hub Discord Server"
+    ttl.Parent = discHolder
+
+    local desc = Instance.new("TextLabel")
+    desc.Size = UDim2.new(1, -24, 0, 32)
+    desc.Position = UDim2.fromOffset(12, 50)
+    desc.BackgroundTransparency = 1
+    desc.Font = Enum.Font.Gotham
+    desc.TextSize = 11
+    desc.TextColor3 = Color3.fromRGB(165, 172, 186)
+    desc.TextWrapped = true
+    desc.TextXAlignment = Enum.TextXAlignment.Left
+    desc.Text = "Updates, key bypasses, and support land here first. Grab a seat while the door is still open."
+    desc.Parent = discHolder
+
+    local linkBox = Instance.new("TextBox")
+    linkBox.Size = UDim2.new(1, -24, 0, 20)
+    linkBox.Position = UDim2.fromOffset(12, 84)
+    linkBox.BackgroundColor3 = Color3.fromRGB(12, 14, 20)
+    linkBox.BorderSizePixel = 0
+    linkBox.Font = Enum.Font.Code
+    linkBox.TextSize = 11
+    linkBox.TextColor3 = ACCENT
+    linkBox.TextXAlignment = Enum.TextXAlignment.Left
+    linkBox.ClearTextOnFocus = false
+    linkBox.TextEditable = false
+    linkBox.Text = INVITE_LINK
+    pcall(function() Instance.new("UICorner", linkBox).CornerRadius = UDim.new(0, 5) end)
+    linkBox.Parent = discHolder
+
+    local timerLbl = Instance.new("TextLabel")
+    timerLbl.Size = UDim2.new(0, 110, 0, 14)
+    timerLbl.Position = UDim2.new(0, 12, 1, -18)
+    timerLbl.BackgroundTransparency = 1
+    timerLbl.Font = Enum.Font.GothamMedium
+    timerLbl.TextSize = 10
+    timerLbl.TextColor3 = Color3.fromRGB(120, 210, 150)
+    timerLbl.TextXAlignment = Enum.TextXAlignment.Left
+    timerLbl.Text = expiryText()
+    timerLbl.Parent = discHolder
+
+    local copyBtn = Instance.new("TextButton")
+    copyBtn.Size = UDim2.fromOffset(96, 22)
+    copyBtn.Position = UDim2.new(1, -108, 1, -22)
+    copyBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+    copyBtn.BorderSizePixel = 0
+    copyBtn.Font = Enum.Font.GothamBold
+    copyBtn.TextSize = 11
+    copyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    copyBtn.Text = "Copy Invite"
+    pcall(function() Instance.new("UICorner", copyBtn).CornerRadius = UDim.new(0, 5) end)
+    copyBtn.Parent = discHolder
+
+    copyBtn.MouseButton1Click:Connect(function()
+        if timeLeft() <= 0 then
+            notify("Discord", "Invite expired. Ask for a fresh link.", 4)
+            return
+        end
+        local done = false
+        if type(setclipboard) == "function" then done = pcall(setclipboard, INVITE_LINK) end
+        if not done and type(toclipboard) == "function" then done = pcall(toclipboard, INVITE_LINK) end
+        if done then notify("Discord", "Invite copied to clipboard", 3)
+        else notify("Discord", "Clipboard unavailable", 3) end
+    end)
+
+    task.spawn(function()
+        while not unloaded do
+            timerLbl.Text = expiryText()
+            timerLbl.TextColor3 = timeLeft() > 0
+                and Color3.fromRGB(120, 210, 150)
+                or Color3.fromRGB(230, 120, 120)
+            task.wait(30)
+        end
+    end)
+end)
+
+--=================== TAB 2 : FARM ===================
 local FT = Window:AddTab("Farm", "bolt")
 local fl, fr = L(FT, "Auto Throw"), Rg(FT, "Train & Upgrade")
 
@@ -1003,7 +1197,7 @@ end, "Instant throw, perfect resolve, auto complete")
 toggle(fl, "AutoPerfect", "Auto Perfect", true, function(v)
     S.autoPerfect = v
     if v then installMeter() else uninstallMeter() end
-end, "Perfect value on every throw")
+end, "Resolves at 0.99 every throw")
 
 slider(fl, "ThrowDelay", "Throw Delay", 0.01, 0, 0.5, 2, function(v) S.throwDelay = v end)
 
@@ -1044,9 +1238,9 @@ divider(fr)
 button(fr, "Upgrade Stand Once", function() invoke("Stand_Upgrade") end)
 button(fr, "Upgrade Fence Once", function() invoke("Plot_UpgradeFence") end)
 
---=================== TAB 2 : SHOP ===================
+--=================== TAB 3 : SHOP ===================
 local ST = Window:AddTab("Shop", "shopping-cart")
-local sl, sr = L(ST, "Auto Buy Best Food"), Rg(ST, "Pets")
+local sl, sr = L(ST, "Auto Buy Next Food"), Rg(ST, "Pets")
 
 toggle(sl, "AutoBuy", "Auto Buy Next Food", false, function(v)
     S.autoBuy = v
@@ -1062,7 +1256,6 @@ button(sl, "Show Next Food", function()
     local price = info and tonumber(info.Price) or 0
     local money, known = getMoney()
     if not known then notify("Shop", "Money not detected", 4) return end
-
     if money >= price then
         notify("Shop", "Next: " .. (info.Name or ("Food " .. i)) .. " · affordable (" .. shortNum(price) .. ")", 6)
     else
@@ -1158,7 +1351,7 @@ button(sr, "Sell Every Pet Listed", function()
     end)
 end)
 
---=================== TAB 3 : MISC ===================
+--=================== TAB 4 : MISC ===================
 local XT = Window:AddTab("Misc", "wrench")
 local xl, xr = L(XT, "Client"), Rg(XT, "Performance & Hub")
 
@@ -1196,20 +1389,17 @@ button(xr, "Restore Graphics", function()
     notify("Performance", "Graphics restored", 3)
 end)
 
---=================== TAB 4 : SETTINGS ===================
+--=================== TAB 5 : SETTINGS ===================
 local GT = Window:AddTab("Settings", "cog")
 local gl, gr = L(GT, "Hub"), Rg(GT, "Live Status")
 
 label(gl, "MAKO Hub  V" .. HUB_VER)
-label(gl, "Throw Food For Animals")
 divider(gl)
 
 label(gl, "UI Keybind - press the key, then click the box")
 keyPicker(gl, "Keybind", "Toggle UI Key", "RightShift", function(v)
     local kc = type(v) == "string" and Enum.KeyCode[v] or v
-    if typeof(kc) == "EnumItem" then
-        S.keybind = kc
-    end
+    if typeof(kc) == "EnumItem" then S.keybind = kc end
 end)
 
 divider(gl)
@@ -1312,21 +1502,13 @@ button(gl, "Unload Hub", function()
     end)
 end)
 
--- live status
-local statusActivity = gr.AddLabel and select(1, pcall(function() return gr:AddLabel("Idle") end))
-local statusMoney
-
-local actLabel
-local moneyLabelObj
-
+local actLabel, moneyLabelObj
 pcall(function() actLabel = gr:AddLabel("Activity : Idle") end)
 pcall(function() moneyLabelObj = gr:AddLabel("Money : -") end)
 
 local function setText(obj, txt)
     if not obj then return end
-    if not pcall(function() obj:SetText(txt) end) then
-        pcall(function() obj.Text = txt end)
-    end
+    if not pcall(function() obj:SetText(txt) end) then pcall(function() obj.Text = txt end) end
 end
 
 task.spawn(function()
@@ -1335,7 +1517,6 @@ task.spawn(function()
         if S.autoThrow then act = "Farming (Auto Throw)"
         elseif S.autoTrain then act = "Training"
         elseif S.autoBuy or S.autoSell or S.autoEquip or S.autoUpStand or S.autoUpFence then act = "Automating" end
-
         setText(actLabel, "Activity : " .. act)
         local money, known = getMoney()
         setText(moneyLabelObj, "Money : " .. (known and shortNum(money) or "-"))
@@ -1355,6 +1536,7 @@ end)
 --=====================================================================
 -- INIT
 --=====================================================================
+loadExpiry()
 installMeter()
 hookController()
 standRef.value = readLvl({"Stand","StandLevel","Bar","BarLevel"}, 0)
@@ -1370,6 +1552,6 @@ end)
 
 task.delay(1, function()
     if unloaded then return end
-    notify("MAKO Hub", "Loaded. Press " .. tostring(S.keybind.Name) .. " to toggle the UI.", 5)
+    notify("MAKO Hub V" .. HUB_VER, "Loaded. Press " .. tostring(S.keybind.Name) .. " to toggle the UI.", 5)
 end)
 print("[MAKO] V" .. HUB_VER .. " loaded | identity " .. tostring(CHOSEN_IDENTITY))
