@@ -5,22 +5,24 @@
     ██║╚██╔╝██║██╔══██║██╔═██╗ ██║   ██║    ██╔══██║██║   ██║██╔══██╗
     ██║ ╚═╝ ██║██║  ██║██║  ██╗╚██████╔╝    ██║  ██║╚██████╔╝██████╔╝
     ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝     ╚═╝  ╚═╝ ╚═════╝ ╚═════╝
-    MAKO Hub  V1.1.0   |   Throw Food For Animals   |   Obsidian
+    MAKO Hub  V1.1.1   |   Throw Food For Animals   |   Obsidian
 ]]
+
+print("[MAKO] boot")
 
 if getgenv and getgenv().MakoHub then
     pcall(function() getgenv().MakoHub:Unload() end)
     getgenv().MakoHub = nil
 end
 
-local PLACE_ID   = 120219252362013
-local GAME_NAME  = "Throw Food For Animals"
-local HUB_VER    = "1.1.0"
-local LOGO       = "rbxassetid://130594491959936"
+local PLACE_ID    = 120219252362013
+local GAME_NAME   = "Throw Food For Animals"
+local HUB_VER     = "1.1.1"
+local LOGO        = "rbxassetid://130594491959936"
 local DISCORD_IMG = "rbxassetid://7252686258"
 local INVITE_LINK = "https://discord.gg/XndUu744x"
-local LINK_LIFETIME = 30 * 24 * 60 * 60
-local ACCENT     = Color3.fromRGB(0, 170, 255)
+local LINK_LIFE   = 30 * 24 * 60 * 60
+local ACCENT      = Color3.fromRGB(0, 170, 255)
 
 --=====================================================================
 -- IDENTITY PROBE
@@ -39,6 +41,7 @@ if type(setthreadidentity) == "function" then
 else
     CHOSEN_IDENTITY = 8
 end
+print("[MAKO] identity " .. tostring(CHOSEN_IDENTITY))
 
 --=====================================================================
 -- CLONEREF GUARD
@@ -83,6 +86,7 @@ do
     if not src then error("[MAKO] Obsidian download failed") end
     Library = ((loadstring or load)(src, "=Obsidian"))()
 end
+print("[MAKO] library ok")
 
 --=====================================================================
 -- REMOTES
@@ -117,15 +121,6 @@ local function invoke(n, ...)
     return nil
 end
 
-local function fire(n, ...)
-    local a = {...}
-    local r = rObj(n)
-    if r then
-        if r:IsA("RemoteEvent") then pcall(function() r:FireServer(unpack(a)) end)
-        else pcall(function() r:InvokeServer(unpack(a)) end) end
-    end
-end
-
 local hasRemote = function(n) return rObj(n) ~= nil end
 local function okRes(r) return type(r) == "table" and r.Ok == true or r == true end
 
@@ -155,10 +150,11 @@ local Ctrl   = client and client:FindFirstChild("Controllers")
 local Cfg    = ReplicatedStorage:FindFirstChild("Config")
 
 local ClientState     = safeReq(Ctrl and Ctrl:FindFirstChild("ClientState"))
-local ThrowController = safeReq(Ctrl and Ctrl:FindFirstChild("ThrowController"))
 local ThrowMeter      = safeReq(Ctrl and Ctrl:FindFirstChild("ThrowMeter"))
+local RevealSequence  = safeReq(Ctrl and Ctrl:FindFirstChild("RevealSequence"))
 local DataController  = safeReq(Ctrl and Ctrl:FindFirstChild("DataController"))
 local FoodsConfig     = safeReq(Cfg and Cfg:FindFirstChild("FoodsConfig"))
+print("[MAKO] modules ok")
 
 --=====================================================================
 -- ECONOMY
@@ -174,36 +170,30 @@ local STAND_PRICES = {
 }
 local FENCE_PRICES = { 40000000, 2e14, 5e19, 1e23, 4.999999999999999e24 }
 
-local PERFECT_VALUE = 0.99
-
 --=====================================================================
 -- STATE
 --=====================================================================
 local S = {
-    autoThrow=false, autoPerfect=true,
+    autoThrow=false, autoPerfect=true, skipCutscene=true,
     autoTrain=false, autoTap=true,
     autoEquip=false, autoSell=false, autoBuy=false,
     autoUpStand=false, autoUpFence=false,
     antiAfk=false, antiKick=false, noRender=false, fpsBoost=false,
-    throwDelay=0.01, tapDelay=0.05, equipDelay=1.2,
-    sellDelay=3.5, buyDelay=0.4, upgradeDelay=0.25,
+    tapDelay=0.05, equipDelay=2.5, sellDelay=3.5,
+    buyDelay=0.4, upgradeDelay=0.25,
     keybind = Enum.KeyCode.RightShift,
 }
 
-local R = { throw=false, train=false, tap=false, equip=false, sell=false, buy=false, stand=false, fence=false }
+local R = { throw=false, tap=false, equip=false, sell=false, buy=false, stand=false, fence=false }
 
-local cooldownEst = 1.3
-local lastThrow = 0
-local pastLine = false
-local crossLineCache
+local laneX
 local standRef = { value = 0 }
 local fenceRef = { value = 0 }
 local upBackoff = { stand = 0, fence = 0 }
-local lastApproach = 0
 local unloaded = false
 local cachedMoney, moneyKnown = 0, false
-local partCache = { stand = nil, fence = nil, at = 0 }
 local ownedFoods = {}
+local lastEquip = 0
 
 --=====================================================================
 -- HELPERS
@@ -218,13 +208,6 @@ local function root()
     return c and c:FindFirstChild("HumanoidRootPart")
 end
 
-local function crossLine()
-    if crossLineCache and crossLineCache.Parent then return crossLineCache end
-    local a = workspace:FindFirstChild("StarterArea")
-    crossLineCache = a and a:FindFirstChild("CrossLine")
-    return crossLineCache
-end
-
 local function busy() return ClientState and ClientState.Busy ~= nil end
 
 local function shortNum(n)
@@ -234,6 +217,12 @@ local function shortNum(n)
         if n >= u[1] then return string.format("%.1f%s", n / u[1], u[2]) end
     end
     return tostring(math.floor(n))
+end
+
+local function ago(sec)
+    if sec < 3600 then return math.max(1, math.floor(sec / 60)) .. "m ago" end
+    if sec < 86400 then return math.floor(sec / 3600) .. "h ago" end
+    return math.floor(sec / 86400) .. "d ago"
 end
 
 --=====================================================================
@@ -298,133 +287,136 @@ task.spawn(function()
 end)
 
 --=====================================================================
--- AUTO PERFECT  (0.99 lagi)
+-- PERFECT
 --=====================================================================
-local meterRaw
+local origMeterRun
 
-local function installMeter()
+local function installPerfect()
     pcall(function()
-        if not ThrowMeter or meterRaw then return end
-        if type(ThrowMeter.new) == "function" then
-            meterRaw = ThrowMeter.new
-            ThrowMeter.new = function(...)
-                local inst = meterRaw(...)
-                if type(inst) == "table" then
-                    inst.Run = function()
-                        return PERFECT_VALUE, { Text = "PERFECT!", Color = Color3.fromRGB(120,255,140) }, 20
-                    end
-                end
-                return inst
+        if not ThrowMeter or origMeterRun then return end
+        if type(ThrowMeter.Run) ~= "function" then return end
+        origMeterRun = ThrowMeter.Run
+        ThrowMeter.Run = function(self, ...)
+            if S.autoPerfect then
+                pcall(function()
+                    self.Locked = true
+                    self.Value = 1
+                    self.Progress = 1
+                end)
+                ThrowMeter.TestAutoTap = 0.05
+            else
+                ThrowMeter.TestAutoTap = nil
             end
+            return origMeterRun(self, ...)
         end
     end)
 end
 
-local function uninstallMeter()
+local function uninstallPerfect()
     pcall(function()
-        if ThrowMeter and meterRaw then ThrowMeter.new = meterRaw end
-        meterRaw = nil
+        if ThrowMeter and origMeterRun then ThrowMeter.Run = origMeterRun end
+        if ThrowMeter then ThrowMeter.TestAutoTap = nil end
+        origMeterRun = nil
     end)
 end
 
 --=====================================================================
--- THROW CONTROLLER HOOK
+-- CUTSCENE SKIP
 --=====================================================================
-local oldStart
-local function dummySeq()
-    local d = { Run = function() return PERFECT_VALUE end }
-    return setmetatable(d, { __call = function() return PERFECT_VALUE end })
+local origReveal
+
+local function installSkip()
+    pcall(function()
+        if not RevealSequence or origReveal then return end
+        if type(RevealSequence.Run) ~= "function" then return end
+        origReveal = RevealSequence.Run
+        RevealSequence.Run = function() end
+    end)
 end
 
-local function hookController()
-    if oldStart or not ThrowController then return end
-    if type(ThrowController.Start) ~= "function" then return end
-    oldStart = ThrowController.Start
-    ThrowController.Start = function(...)
-        if S.autoThrow then
-            task.spawn(function() pcall(throwOnce) end)
-            return dummySeq()
-        end
-        local ok, a, b, c = pcall(oldStart, ...)
-        if not ok then return dummySeq() end
-        return a, b, c
-    end
-end
-
-local function unhookController()
-    if not oldStart or not ThrowController then return end
-    pcall(function() ThrowController.Start = oldStart end)
-    oldStart = nil
+local function uninstallSkip()
+    pcall(function()
+        if RevealSequence and origReveal then RevealSequence.Run = origReveal end
+        origReveal = nil
+    end)
 end
 
 --=====================================================================
--- THROW CORE
+-- THROW
 --=====================================================================
-local function ensurePastLine()
-    local hrp = root()
-    if not hrp then return false end
-    local cl = crossLine()
-    if cl then
-        if hrp.Position.Z > cl.Position.Z - 1 then
-            hrp.CFrame = CFrame.new(hrp.Position.X, hrp.Position.Y + 2, cl.Position.Z - 8)
-            task.wait(0.07)
-        end
-    else
-        hrp.CFrame = CFrame.new(0, 5.4, -42)
-        task.wait(0.07)
-    end
-    pastLine = true
+local function groundUnder(pos, ignore)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = ignore
+    local hit = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -300, 0), params)
+    return hit and hit.Position or nil
+end
+
+local function crossLine()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum or hum.Health <= 0 then return false end
+    local area = workspace:FindFirstChild("StarterArea")
+    local line = area and area:FindFirstChild("CrossLine")
+    if not line then return false end
+    if hum.SeatPart then pcall(function() hum.Sit = false end) task.wait(0.15) end
+    local halfX = area.Size.X / 2
+    local x = math.clamp(laneX or hrp.Position.X, area.Position.X - halfX + 2, area.Position.X + halfX - 2)
+    local z = line.Position.Z - 1.5
+    local ground = groundUnder(Vector3.new(x, area.Position.Y + area.Size.Y / 2, z), { char })
+    if not ground then return false end
+    local pos = ground + Vector3.new(0, hum.HipHeight + hrp.Size.Y / 2 + 0.1, 0)
+    char:PivotTo(CFrame.lookAt(pos, pos + Vector3.new(0, 0, -1)))
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
     return true
 end
 
-function throwOnce()
-    if busy() then return false end
-    if os.clock() - lastThrow < cooldownEst then return false end
-    if not pastLine then ensurePastLine() end
+local function throwLoop()
+    while S.autoThrow and not unloaded do
+        local t0 = os.clock()
+        while S.autoThrow and busy() and os.clock() - t0 < 30 do task.wait(0.2) end
+        if not S.autoThrow then break end
 
-    local sres = invoke("Throw_Start")
-    if not okRes(sres) and sres ~= nil then
-        if type(sres) == "table" and sres.Reason == "Cooldown" then
-            cooldownEst = math.min(cooldownEst + 0.15, 2.6)
+        local started = false
+        for _ = 1, 4 do
+            if not S.autoThrow then break end
+            crossLine()
+            local t1 = os.clock()
+            while os.clock() - t1 < 3 do
+                if ClientState and ClientState.Busy == "Throw" then started = true break end
+                task.wait(0.08)
+            end
+            if started then break end
+        end
+
+        if started then
+            local t2 = os.clock()
+            while S.autoThrow and ClientState and ClientState.Busy == "Throw" and os.clock() - t2 < 30 do
+                task.wait(0.15)
+            end
+            local t3 = os.clock()
+            while S.autoThrow and busy() and os.clock() - t3 < 10 do task.wait(0.1) end
+            task.wait(0.25)
         else
-            pastLine = false
+            task.wait(0.8)
         end
-        return false
     end
-
-    local value = PERFECT_VALUE
-    if not S.autoPerfect then value = math.random(45, 92) / 100 end
-
-    local rres = invoke("Throw_Resolve", value)
-    if not okRes(rres) and rres ~= nil then
-        pastLine = false
-        return false
-    end
-
-    fire("Throw_Complete")
-    lastThrow = os.clock()
-    return true
+    R.throw = false
 end
 
 local function startThrow()
     if R.throw then return end
-    if not hasRemote("Throw_Start") then notify("Auto Throw", "Throw_Start missing", 4) return end
     R.throw = true
-    installMeter()
+    installPerfect()
+    if S.skipCutscene then installSkip() end
     pcall(invoke, "Player_SetThrowPower", 999999999)
-    lastThrow = 0
-    cooldownEst = 1.3
-    task.spawn(function() ensurePastLine() end)
-
-    task.spawn(function()
-        while S.autoThrow and not unloaded do
-            local remain = cooldownEst - (os.clock() - lastThrow)
-            if remain > 0 then task.wait(math.min(remain, 0.1))
-            else pcall(throwOnce) task.wait(S.throwDelay) end
-        end
-        R.throw = false
-        pastLine = false
-    end)
+    if not laneX then
+        local hrp = root()
+        if hrp then laneX = hrp.Position.X end
+    end
+    task.spawn(throwLoop)
 end
 
 --=====================================================================
@@ -441,7 +433,7 @@ local function onCircle()
     local s, hrp = trainSpot(), root()
     if not s or not hrp then return false end
     local d = hrp.Position - s.Position
-    return Vector3.new(d.X, 0, d.Z).Magnitude < math.max(s.Size.Y, s.Size.Z) / 2 + 2
+    return Vector3.new(d.X, 0, d.Z).Magnitude < math.max(s.Size.Y, s.Size.Z) / 2 + 3
 end
 
 local function tapGui()
@@ -471,10 +463,10 @@ local function startTap()
     if R.tap then return end
     R.tap = true
     task.spawn(function()
-        while S.autoTrain and not unloaded do
+        while S.autoTap and not unloaded do
             pcall(function()
                 invoke("Training_TapBonus", 1)
-                if S.autoTap then tapGui() end
+                tapGui()
             end)
             task.wait(S.tapDelay)
         end
@@ -483,29 +475,28 @@ local function startTap()
 end
 
 local function startTrain()
-    if R.train then return end
-    if not hasRemote("Training_Start") then notify("Auto Train", "Training_Start missing", 4) return end
-    R.train = true
     task.spawn(function()
         while S.autoTrain and not unloaded do
             if not onCircle() then
                 local s, hrp = trainSpot(), root()
-                if s and hrp then hrp.CFrame = s.CFrame + Vector3.new(0, 3, 0) end
-                task.wait(0.3)
+                if s and hrp then
+                    hrp.CFrame = s.CFrame + Vector3.new(0, 3, 0)
+                    task.wait(0.35)
+                end
             end
-            if S.autoTrain then pcall(invoke, "Training_Start") end
-            task.wait(0.35)
+            if S.autoTrain and onCircle() then pcall(invoke, "Training_Start") end
+            task.wait(0.4)
         end
-        R.train = false
     end)
-    startTap()
 end
 
 --=====================================================================
 -- EQUIP / SELL
 --=====================================================================
-local function equipOnce()
+local function equipOnce(force)
     if busy() then return end
+    if not force and os.clock() - lastEquip < 1.5 then return end
+    lastEquip = os.clock()
     pcall(invoke, "Plot_EquipBest")
 end
 
@@ -598,10 +589,8 @@ local function buyNextPass()
     local info = foodInfo(i)
     local price = info and tonumber(info.Price)
     if not price then return end
-
     local money, known = getMoney()
     if known and money < price then return end
-
     if okRes(invoke("Shop_Buy", i)) then
         ownedFoods[i] = true
         invoke("Shop_Equip", i)
@@ -623,7 +612,7 @@ local function startBuy()
 end
 
 --=====================================================================
--- UPGRADES
+-- UPGRADES (instant)
 --=====================================================================
 local function readLvl(keys, fb)
     if DataController and DataController.Get then
@@ -635,32 +624,6 @@ local function readLvl(keys, fb)
     return fb
 end
 
-local function partsFor()
-    if os.clock() - partCache.at < 3 and (partCache.stand or partCache.fence) then return end
-    partCache.at = os.clock()
-    partCache.stand, partCache.fence = nil, nil
-    local props = workspace:FindFirstChild("LocalPlotProps")
-    if not props then return end
-    for _, d in ipairs(props:GetDescendants()) do
-        if d:IsA("BasePart") then
-            local low = d.Name:lower()
-            if not partCache.stand and (low:find("stand") or low:find("pull")) then partCache.stand = d
-            elseif not partCache.fence and (low:find("fence") or low:find("sign")) then partCache.fence = d end
-        end
-        if partCache.stand and partCache.fence then break end
-    end
-end
-
-local function approach(part)
-    local hrp = root()
-    if not part or not hrp then return end
-    if (hrp.Position - part.Position).Magnitude < 16 then return end
-    if os.clock() - lastApproach < 1.5 then return end
-    lastApproach = os.clock()
-    hrp.CFrame = part.CFrame + Vector3.new(0, 4, 0)
-    task.wait(0.15)
-end
-
 local POOR = {
     NotEnoughMoney = true, InsufficientFunds = true, Poor = true,
     NotEnoughCash = true, NoMoney = true, CantAfford = true, NeedMoreMoney = true,
@@ -669,13 +632,11 @@ local POOR = {
 local function upgradePass(cacheKey, remote, prices, keys, ref)
     if os.clock() < upBackoff[cacheKey] then return end
     local lvl = readLvl(keys, ref.value)
-    for _ = 1, 6 do
+    for _ = 1, 8 do
         local price = prices[lvl + 1]
         if not price then return end
         local money, known = getMoney()
         if known and money < price then upBackoff[cacheKey] = os.clock() + 0.5 return end
-        partsFor()
-        approach(partCache[cacheKey])
         local res = invoke(remote)
         if okRes(res) then
             lvl = lvl + 1
@@ -683,7 +644,7 @@ local function upgradePass(cacheKey, remote, prices, keys, ref)
             upBackoff[cacheKey] = 0
         else
             local reason = type(res) == "table" and res.Reason or ""
-            upBackoff[cacheKey] = POOR[reason] and (os.clock() + 0.8) or (os.clock() + 0.35)
+            upBackoff[cacheKey] = POOR[reason] and (os.clock() + 0.8) or (os.clock() + 0.3)
             return
         end
     end
@@ -703,7 +664,7 @@ local function startUpgrade(stateKey, cacheKey, remote, prices, keys, ref)
 end
 
 --=====================================================================
--- PET DETECTION
+-- PETS
 --=====================================================================
 local petMap = {}
 local seenIds = {}
@@ -726,7 +687,6 @@ end
 local function buildPetList()
     petMap = {}
     seenIds = {}
-
     local animals
     if DataController and DataController.Get then
         local ok, v = pcall(function() return DataController:Get("Animals") end)
@@ -740,7 +700,6 @@ local function buildPetList()
             end
         end
     end
-
     local bp = LocalPlayer:FindFirstChild("Backpack")
     if bp then
         for _, t in ipairs(bp:GetChildren()) do
@@ -750,7 +709,6 @@ local function buildPetList()
             end
         end
     end
-
     local ch = LocalPlayer.Character
     if ch then
         for _, t in ipairs(ch:GetChildren()) do
@@ -760,7 +718,6 @@ local function buildPetList()
             end
         end
     end
-
     local props = workspace:FindFirstChild("LocalPlotProps")
     if props then
         for _, d in ipairs(props:GetDescendants()) do
@@ -770,7 +727,6 @@ local function buildPetList()
             end
         end
     end
-
     local out = {}
     for k in pairs(petMap) do out[#out + 1] = k end
     table.sort(out)
@@ -779,7 +735,7 @@ local function buildPetList()
 end
 
 --=====================================================================
--- MISC SYSTEMS
+-- MISC
 --=====================================================================
 local afkConn
 local function setAntiAfk(on)
@@ -893,7 +849,7 @@ local function setAntiKick(on)
 end
 
 --=====================================================================
--- DISCORD LINK EXPIRY (30 days)
+-- DISCORD EXPIRY
 --=====================================================================
 local EXPIRY_FILE = "MakoHub_discord_expiry.txt"
 local expiry = 0
@@ -902,18 +858,13 @@ local function loadExpiry()
     local ok, raw = pcall(function() return readfile(EXPIRY_FILE) end)
     if ok and raw then
         local n = tonumber(raw)
-        if n and n > 0 then
-            expiry = n
-            return
-        end
+        if n and n > 0 then expiry = n return end
     end
-    expiry = os.time() + LINK_LIFETIME
+    expiry = os.time() + LINK_LIFE
     pcall(function() writefile(EXPIRY_FILE, tostring(expiry)) end)
 end
 
-local function timeLeft()
-    return expiry - os.time()
-end
+local function timeLeft() return expiry - os.time() end
 
 local function expiryText()
     local left = timeLeft()
@@ -921,62 +872,107 @@ local function expiryText()
     local d = math.floor(left / 86400)
     local h = math.floor((left % 86400) / 3600)
     if d > 0 then return d .. "d " .. h .. "h left" end
-    local m = math.floor((left % 3600) / 60)
-    return h .. "h " .. m .. "m left"
+    return h .. "h " .. math.floor((left % 3600) / 60) .. "m left"
 end
 
 --=====================================================================
 -- UI HELPERS
 --=====================================================================
-local function L(t, n) return t.AddLeftGroupbox and t:AddLeftGroupbox(n) or t:AddGroupbox(n) end
-local function Rg(t, n) return t.AddRightGroupbox and t:AddRightGroupbox(n) or t:AddGroupbox(n) end
-
 local function toggle(b, id, text, def, cb, tip)
+    if not b then return end
     local cfg = {Text=text, Name=text, Default=def, Tooltip=tip, Callback=cb or function() end}
     if not pcall(function() b:AddToggle(id, cfg) end) then pcall(function() b:AddToggle(cfg) end) end
 end
 local function slider(b, id, text, def, mn, mx, rd, cb)
+    if not b then return end
     local cfg = {Text=text, Name=text, Default=def, Min=mn, Max=mx, Rounding=rd, Callback=cb or function() end}
     if not pcall(function() b:AddSlider(id, cfg) end) then pcall(function() b:AddSlider(cfg) end) end
 end
 local function button(b, text, cb)
+    if not b then return end
     local cfg = {Text=text, Name=text, Func=cb or function() end}
     if not pcall(function() b:AddButton(text, cfg) end) then pcall(function() b:AddButton(cfg) end) end
 end
-local function input(b, id, text, def, cb)
-    local cfg = {Text=text, Name=text, Default=def, Finished=true, Callback=cb or function() end}
-    if not pcall(function() b:AddInput(id, cfg) end) then pcall(function() b:AddInput(cfg) end) end
-end
 local function dropdown(b, id, text, vals, def, cb)
+    if not b then return nil end
     local cfg = {Text=text, Name=text, Values=vals, Default=def, Callback=cb or function() end}
     local ok, obj
     ok = pcall(function() obj = b:AddDropdown(id, cfg) end)
     if not ok then pcall(function() obj = b:AddDropdown(cfg) end) end
     return obj
 end
-local function label(b, t) if b.AddLabel then pcall(function() b:AddLabel(t) end) end end
-local function divider(b) if b.AddDivider then pcall(function() b:AddDivider() end) end end
+local function label(b, t) if b and b.AddLabel then pcall(function() b:AddLabel(t) end) end end
+local function divider(b) if b and b.AddDivider then pcall(function() b:AddDivider() end) end end
 
-local keyPickerWorks = false
-local function keyPicker(b, id, text, def, cb)
-    local cfg = {Text=text, Name=text, Default=def, Mode="Toggle", Callback=cb or function() end}
-    local ok = pcall(function() b:AddKeyPicker(id, cfg) end)
-    if not ok then ok = pcall(function() b:AddKeyPicker(cfg) end) end
-    if ok then keyPickerWorks = true end
-    return ok
+local KEYS = {"Frame","Text","Label","Element","Object","Container","Root","Holder","Box","Group"}
+local function findInst(obj)
+    if typeof(obj) == "Instance" then return obj end
+    for _, k in ipairs(KEYS) do
+        local ok, v = pcall(function() return obj[k] end)
+        if ok and typeof(v) == "Instance" then return v end
+    end
+end
+
+local function containerOf(b)
+    if not b then return nil end
+    local ok, lbl = pcall(function() return b:AddLabel(" ") end)
+    if ok and lbl then
+        local inst = findInst(lbl)
+        if inst and inst.Parent then return inst.Parent end
+    end
+    local gi = findInst(b)
+    if gi then return gi end
 end
 
 --=====================================================================
 -- WINDOW
 --=====================================================================
-local Window = Library:CreateWindow({
-    Title = "MAKO Hub",
-    Subtitle = GAME_NAME .. "  ·  V" .. HUB_VER,
-    Icon = LOGO,
-    ShowConsoleButton = false,
-    Resizable = true,
-})
+local Window
+do
+    local ok, w = pcall(function()
+        return Library:CreateWindow({
+            Title = "MAKO Hub",
+            Subtitle = GAME_NAME .. "  ·  V" .. HUB_VER,
+            ShowConsoleButton = false,
+            Resizable = true,
+        })
+    end)
+    if ok and w then Window = w else Window = Library:CreateWindow({ Title = "MAKO Hub" }) end
+end
 getgenv().MakoHub = Library
+print("[MAKO] window ok")
+
+-- robust na tab creation: sinusubukan lahat ng paraan
+local ICON_TRIES = {"circle", "dot", "square", "box", "home", "bolt"}
+
+local function makeTab(name, preferred)
+    local list = { preferred }
+    for _, ic in ipairs(ICON_TRIES) do list[#list + 1] = ic end
+
+    for _, ic in ipairs(list) do
+        if ic then
+            local ok, t = pcall(function() return Window:AddTab(name, ic) end)
+            if ok and t then
+                print("[MAKO] tab " .. name .. " ok (" .. ic .. ")")
+                return t
+            end
+        end
+    end
+    local ok, t = pcall(function() return Window:AddTab(name) end)
+    if ok and t then
+        print("[MAKO] tab " .. name .. " ok (no icon)")
+        return t
+    end
+    print("[MAKO] tab " .. name .. " FAILED")
+end
+
+local function box(t, name, right)
+    if not t then return nil end
+    local fn = right and (t.AddRightGroupbox or t.AddGroupbox) or (t.AddLeftGroupbox or t.AddGroupbox)
+    if not fn then return nil end
+    local ok, b = pcall(fn, t, name)
+    if ok then return b end
+end
 
 task.spawn(function()
     pcall(function() Window:SetIcon(LOGO) end)
@@ -988,221 +984,113 @@ task.spawn(function()
 end)
 
 --=================== TAB 1 : MAIN ===================
-local MT = Window:AddTab("Main", "house")
-local ml, mr = L(MT, "Profile"), Rg(MT, "Community")
-
--- profile
-local avatarHolder = Instance.new("Frame")
-avatarHolder.Size = UDim2.new(1, -20, 0, 96)
-avatarHolder.BackgroundColor3 = Color3.fromRGB(20, 22, 30)
-avatarHolder.BackgroundTransparency = 0.25
-avatarHolder.BorderSizePixel = 0
-pcall(function()
-    if typeof(ml) == "Instance" then
-        avatarHolder.Parent = ml
-    end
-end)
-pcall(function()
-    local c = Instance.new("UICorner", avatarHolder)
-    c.CornerRadius = UDim.new(0, 8)
-    local s = Instance.new("UIStroke", avatarHolder)
-    s.Color = ACCENT
-    s.Thickness = 1
-    s.Transparency = 0.35
-end)
+local MT = makeTab("Main", "user")
+local ml, mr = box(MT, "Profile", false), box(MT, "Community", true)
 
 task.spawn(function()
-    local img = Instance.new("ImageLabel")
-    img.Size = UDim2.fromOffset(72, 72)
-    img.Position = UDim2.new(0, 12, 0.5, -36)
-    img.BackgroundColor3 = Color3.fromRGB(30, 34, 44)
-    img.BorderSizePixel = 0
-    img.ScaleType = Enum.ScaleType.Crop
-    pcall(function() Instance.new("UICorner", img).CornerRadius = UDim.new(0, 8) end)
     pcall(function()
+        local holder = containerOf(ml)
+        if not holder then return end
+        local f = Instance.new("Frame")
+        f.Size = UDim2.fromOffset(56, 56)
+        f.BackgroundColor3 = Color3.fromRGB(26, 28, 38)
+        f.BorderSizePixel = 0
+        f.ClipsDescendants = true
+        local c = Instance.new("UICorner", f)
+        c.CornerRadius = UDim.new(0, 8)
+        local st = Instance.new("UIStroke", f)
+        st.Color = ACCENT st.Thickness = 1 st.Transparency = 0.5
+        f.Parent = holder
+        local img = Instance.new("ImageLabel")
+        img.Size = UDim2.fromScale(1, 1)
+        img.BackgroundTransparency = 1
+        img.ScaleType = Enum.ScaleType.Crop
+        img.Parent = f
         local ok, url = pcall(function()
             return Players:GetUserThumbnailAsync(LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
         end)
         if ok and url then img.Image = url end
     end)
-    img.Parent = avatarHolder
-
-    local user = Instance.new("TextLabel")
-    user.Size = UDim2.new(1, -100, 0, 22)
-    user.Position = UDim2.fromOffset(94, 22)
-    user.BackgroundTransparency = 1
-    user.Font = Enum.Font.GothamBold
-    user.TextSize = 16
-    user.TextColor3 = Color3.fromRGB(255, 255, 255)
-    user.TextXAlignment = Enum.TextXAlignment.Left
-    user.Text = LocalPlayer.DisplayName
-    user.Parent = avatarHolder
-
-    local tag = Instance.new("TextLabel")
-    tag.Size = UDim2.new(1, -100, 0, 18)
-    tag.Position = UDim2.fromOffset(94, 44)
-    tag.BackgroundTransparency = 1
-    tag.Font = Enum.Font.Gotham
-    tag.TextSize = 12
-    tag.TextColor3 = Color3.fromRGB(150, 160, 175)
-    tag.TextXAlignment = Enum.TextXAlignment.Left
-    tag.Text = "@" .. LocalPlayer.Name
-    tag.Parent = avatarHolder
-
-    local gameLbl = Instance.new("TextLabel")
-    gameLbl.Size = UDim2.new(1, -100, 0, 18)
-    gameLbl.Position = UDim2.fromOffset(94, 62)
-    gameLbl.BackgroundTransparency = 1
-    gameLbl.Font = Enum.Font.GothamMedium
-    gameLbl.TextSize = 11
-    gameLbl.TextColor3 = ACCENT
-    gameLbl.TextXAlignment = Enum.TextXAlignment.Left
-    gameLbl.Text = "Playing: " .. GAME_NAME
-    gameLbl.Parent = avatarHolder
 end)
+
+label(ml, LocalPlayer.DisplayName)
+label(ml, "@" .. LocalPlayer.Name)
+label(ml, "Playing " .. GAME_NAME)
 
 divider(ml)
-label(ml, "Changelog  ·  V" .. HUB_VER)
-label(ml, "Added")
-label(ml, "  • Main tab with profile and community")
-label(ml, "  • Discord server panel with copy button")
-label(ml, "  • Live activity and money status")
-label(ml, "  • Customisable UI keybind picker")
-label(ml, "Fixed")
-label(ml, "  • Auto Perfect now resolves at 0.99")
-label(ml, "  • Auto Buy follows the next food only")
-label(ml, "  • Auto Upgrade no longer spams")
-label(ml, "  • Throw sequence no longer doubles")
-label(ml, "  • Sandboxed module errors resolved")
+label(ml, "Changelog  V" .. HUB_VER)
 
--- discord
-local discHolder = Instance.new("Frame")
-discHolder.Size = UDim2.new(1, -20, 0, 132)
-discHolder.BackgroundColor3 = Color3.fromRGB(20, 22, 30)
-discHolder.BackgroundTransparency = 0.25
-discHolder.BorderSizePixel = 0
-pcall(function()
-    if typeof(mr) == "Instance" then discHolder.Parent = mr end
-end)
-pcall(function()
-    Instance.new("UICorner", discHolder).CornerRadius = UDim.new(0, 8)
-    local s = Instance.new("UIStroke", discHolder)
-    s.Color = Color3.fromRGB(88, 101, 242)
-    s.Thickness = 1
-    s.Transparency = 0.25
-end)
+local CHANGELOG = {
+    {2,    "Added",   "Profile card"},
+    {7,    "Added",   "Discord panel"},
+    {16,   "Added",   "Auto skip cutscene"},
+    {40,   "Fixed",   "Auto Perfect locks at max"},
+    {95,   "Fixed",   "Auto Train runs normally"},
+    {160,  "Fixed",   "Auto Tap works without training"},
+    {260,  "Fixed",   "Tabs now load properly"},
+    {1500, "Changed", "Upgrades are instant"},
+    {2900, "Changed", "Equip has a cooldown"},
+}
 
-task.spawn(function()
-    local ico = Instance.new("ImageLabel")
-    ico.Size = UDim2.fromOffset(34, 34)
-    ico.Position = UDim2.fromOffset(12, 10)
-    ico.BackgroundTransparency = 1
-    ico.Image = DISCORD_IMG
-    ico.ScaleType = Enum.ScaleType.Fit
-    ico.Parent = discHolder
+for _, e in ipairs(CHANGELOG) do
+    label(ml, e[2] .. "  " .. ago(e[1]))
+    label(ml, "   " .. e[3])
+end
 
-    local ttl = Instance.new("TextLabel")
-    ttl.Size = UDim2.new(1, -60, 0, 20)
-    ttl.Position = UDim2.fromOffset(54, 14)
-    ttl.BackgroundTransparency = 1
-    ttl.Font = Enum.Font.GothamBold
-    ttl.TextSize = 14
-    ttl.TextColor3 = Color3.fromRGB(140, 150, 255)
-    ttl.TextXAlignment = Enum.TextXAlignment.Left
-    ttl.Text = "MAKO Hub Discord Server"
-    ttl.Parent = discHolder
+label(mr, "MAKO Hub Discord")
+label(mr, "Updates and fixes drop here first.")
+label(mr, "Join while the door is open.")
+divider(mr)
+label(mr, INVITE_LINK)
+label(mr, "Valid: " .. expiryText())
 
-    local desc = Instance.new("TextLabel")
-    desc.Size = UDim2.new(1, -24, 0, 32)
-    desc.Position = UDim2.fromOffset(12, 50)
-    desc.BackgroundTransparency = 1
-    desc.Font = Enum.Font.Gotham
-    desc.TextSize = 11
-    desc.TextColor3 = Color3.fromRGB(165, 172, 186)
-    desc.TextWrapped = true
-    desc.TextXAlignment = Enum.TextXAlignment.Left
-    desc.Text = "Updates, key bypasses, and support land here first. Grab a seat while the door is still open."
-    desc.Parent = discHolder
-
-    local linkBox = Instance.new("TextBox")
-    linkBox.Size = UDim2.new(1, -24, 0, 20)
-    linkBox.Position = UDim2.fromOffset(12, 84)
-    linkBox.BackgroundColor3 = Color3.fromRGB(12, 14, 20)
-    linkBox.BorderSizePixel = 0
-    linkBox.Font = Enum.Font.Code
-    linkBox.TextSize = 11
-    linkBox.TextColor3 = ACCENT
-    linkBox.TextXAlignment = Enum.TextXAlignment.Left
-    linkBox.ClearTextOnFocus = false
-    linkBox.TextEditable = false
-    linkBox.Text = INVITE_LINK
-    pcall(function() Instance.new("UICorner", linkBox).CornerRadius = UDim.new(0, 5) end)
-    linkBox.Parent = discHolder
-
-    local timerLbl = Instance.new("TextLabel")
-    timerLbl.Size = UDim2.new(0, 110, 0, 14)
-    timerLbl.Position = UDim2.new(0, 12, 1, -18)
-    timerLbl.BackgroundTransparency = 1
-    timerLbl.Font = Enum.Font.GothamMedium
-    timerLbl.TextSize = 10
-    timerLbl.TextColor3 = Color3.fromRGB(120, 210, 150)
-    timerLbl.TextXAlignment = Enum.TextXAlignment.Left
-    timerLbl.Text = expiryText()
-    timerLbl.Parent = discHolder
-
-    local copyBtn = Instance.new("TextButton")
-    copyBtn.Size = UDim2.fromOffset(96, 22)
-    copyBtn.Position = UDim2.new(1, -108, 1, -22)
-    copyBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
-    copyBtn.BorderSizePixel = 0
-    copyBtn.Font = Enum.Font.GothamBold
-    copyBtn.TextSize = 11
-    copyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    copyBtn.Text = "Copy Invite"
-    pcall(function() Instance.new("UICorner", copyBtn).CornerRadius = UDim.new(0, 5) end)
-    copyBtn.Parent = discHolder
-
-    copyBtn.MouseButton1Click:Connect(function()
-        if timeLeft() <= 0 then
-            notify("Discord", "Invite expired. Ask for a fresh link.", 4)
-            return
-        end
-        local done = false
-        if type(setclipboard) == "function" then done = pcall(setclipboard, INVITE_LINK) end
-        if not done and type(toclipboard) == "function" then done = pcall(toclipboard, INVITE_LINK) end
-        if done then notify("Discord", "Invite copied to clipboard", 3)
-        else notify("Discord", "Clipboard unavailable", 3) end
-    end)
-
-    task.spawn(function()
-        while not unloaded do
-            timerLbl.Text = expiryText()
-            timerLbl.TextColor3 = timeLeft() > 0
-                and Color3.fromRGB(120, 210, 150)
-                or Color3.fromRGB(230, 120, 120)
-            task.wait(30)
-        end
-    end)
+button(mr, "Copy Invite Link", function()
+    if timeLeft() <= 0 then
+        notify("Discord", "Invite expired. Ask for a fresh link.", 4)
+        return
+    end
+    local done = false
+    if type(setclipboard) == "function" then done = pcall(setclipboard, INVITE_LINK) end
+    if not done and type(toclipboard) == "function" then done = pcall(toclipboard, INVITE_LINK) end
+    if done then notify("Discord", "Invite copied", 3)
+    else notify("Discord", "Clipboard unavailable", 3) end
 end)
 
 --=================== TAB 2 : FARM ===================
-local FT = Window:AddTab("Farm", "bolt")
-local fl, fr = L(FT, "Auto Throw"), Rg(FT, "Train & Upgrade")
+local FT = makeTab("Farm", "bolt")
+local fl, fr = box(FT, "Auto Throw", false), box(FT, "Train & Upgrade", true)
 
 toggle(fl, "AutoThrow", "Auto Throw", false, function(v)
     S.autoThrow = v
-    if v then startThrow() end
-end, "Instant throw, perfect resolve, auto complete")
+    if v then startThrow() else pcall(invoke, "Throw_Cancel") end
+end, "Walks to the line, perfect throw, skips cutscene")
 
 toggle(fl, "AutoPerfect", "Auto Perfect", true, function(v)
     S.autoPerfect = v
-    if v then installMeter() else uninstallMeter() end
-end, "Resolves at 0.99 every throw")
+    if v then installPerfect() else uninstallPerfect() end
+end, "Locks the meter at maximum")
 
-slider(fl, "ThrowDelay", "Throw Delay", 0.01, 0, 0.5, 2, function(v) S.throwDelay = v end)
+toggle(fl, "SkipCutscene", "Auto Skip Cutscene", true, function(v)
+    S.skipCutscene = v
+    if v then installSkip() else uninstallSkip() end
+end, "Ends the reveal instantly")
 
 divider(fl)
-button(fl, "Throw Once", function() pcall(throwOnce) end)
+button(fl, "Set Throw Lane Here", function()
+    local hrp = root()
+    if hrp then
+        laneX = hrp.Position.X
+        notify("Throw Lane", "Lane saved at X " .. math.floor(laneX), 3)
+    end
+end)
+button(fl, "Throw Once", function()
+    if S.autoThrow then return end
+    S.autoThrow = true
+    startThrow()
+    task.delay(8, function()
+        if S.autoThrow and R.throw then S.autoThrow = false end
+    end)
+end)
 button(fl, "Use Super Throw", function()
     invoke("Throw_UseSuper")
     notify("Throw", "Super throw used", 2)
@@ -1215,22 +1103,24 @@ end)
 toggle(fr, "AutoTrain", "Auto Train", false, function(v)
     S.autoTrain = v
     if v then startTrain() else pcall(invoke, "Training_Stop") end
-end, "Moves to the stand and keeps training alive")
+end, "Walks to the pull-up stand and starts")
 
-toggle(fr, "AutoTap", "Auto Tap 2x Booster", true, function(v) S.autoTap = v end,
-    "Hits every tap bonus for double boost")
+toggle(fr, "AutoTap", "Auto Tap 2x Booster", true, function(v)
+    S.autoTap = v
+    if v then startTap() end
+end, "Runs even when Auto Train is off")
 slider(fr, "TapDelay", "Tap Delay", 0.05, 0.01, 0.4, 2, function(v) S.tapDelay = v end)
 
 divider(fr)
 toggle(fr, "UpStand", "Auto Upgrade Stand", false, function(v)
     S.autoUpStand = v
     if v then startUpgrade("autoUpStand", "stand", "Stand_Upgrade", STAND_PRICES, {"Stand","StandLevel","Bar","BarLevel"}, standRef) end
-end, "Walks to the stand, upgrades only when money is enough")
+end, "Instant upgrade once money is enough")
 
 toggle(fr, "UpFence", "Auto Upgrade Fence", false, function(v)
     S.autoUpFence = v
     if v then startUpgrade("autoUpFence", "fence", "Plot_UpgradeFence", FENCE_PRICES, {"FenceLevel","Fence","PlotFence"}, fenceRef) end
-end, "Walks to the fence sign, upgrades only when money is enough")
+end, "Instant upgrade once money is enough")
 
 slider(fr, "UpDelay", "Upgrade Loop Delay", 0.25, 0.1, 2, 2, function(v) S.upgradeDelay = v end)
 
@@ -1239,13 +1129,13 @@ button(fr, "Upgrade Stand Once", function() invoke("Stand_Upgrade") end)
 button(fr, "Upgrade Fence Once", function() invoke("Plot_UpgradeFence") end)
 
 --=================== TAB 3 : SHOP ===================
-local ST = Window:AddTab("Shop", "shopping-cart")
-local sl, sr = L(ST, "Auto Buy Next Food"), Rg(ST, "Pets")
+local ST = makeTab("Shop", "shopping-cart")
+local sl, sr = box(ST, "Auto Buy Next Food", false), box(ST, "Pets", true)
 
 toggle(sl, "AutoBuy", "Auto Buy Next Food", false, function(v)
     S.autoBuy = v
     if v then startBuy() end
-end, "Buys the food right after your last owned one, then equips it")
+end, "Buys only the next food after your last owned")
 
 slider(sl, "BuyDelay", "Buy Delay", 0.4, 0.1, 2, 2, function(v) S.buyDelay = v end)
 
@@ -1257,9 +1147,9 @@ button(sl, "Show Next Food", function()
     local money, known = getMoney()
     if not known then notify("Shop", "Money not detected", 4) return end
     if money >= price then
-        notify("Shop", "Next: " .. (info.Name or ("Food " .. i)) .. " · affordable (" .. shortNum(price) .. ")", 6)
+        notify("Shop", "Next: " .. (info.Name or ("Food " .. i)) .. " · affordable", 6)
     else
-        notify("Shop", "Next: " .. (info.Name or ("Food " .. i)) .. " · short by " .. shortNum(price - money), 6)
+        notify("Shop", "Next: " .. (info.Name or ("Food " .. i)) .. " · short " .. shortNum(price - money), 6)
     end
 end)
 
@@ -1307,8 +1197,8 @@ end)
 toggle(sr, "AutoEquip", "Auto Equip Best Pet", false, function(v)
     S.autoEquip = v
     if v then startEquip() end
-end)
-slider(sr, "EquipDelay", "Equip Delay", 1.2, 0.3, 5, 1, function(v) S.equipDelay = v end)
+end, "Has a cooldown so remotes are not spammed")
+slider(sr, "EquipDelay", "Equip Delay", 2.5, 1, 8, 1, function(v) S.equipDelay = v end)
 
 toggle(sr, "AutoSell", "Auto Sell All", false, function(v)
     S.autoSell = v
@@ -1317,7 +1207,7 @@ end)
 slider(sr, "SellDelay", "Sell Delay", 3.5, 1, 15, 1, function(v) S.sellDelay = v end)
 
 divider(sr)
-label(sr, "Manual pet selling (Backpack or Plot)")
+label(sr, "Manual selling")
 
 local petDropdown = dropdown(sr, "PetSelect", "Select Pet", { "No pets found" }, "No pets found", function(v)
     S.selectedPet = v
@@ -1352,17 +1242,12 @@ button(sr, "Sell Every Pet Listed", function()
 end)
 
 --=================== TAB 4 : MISC ===================
-local XT = Window:AddTab("Misc", "wrench")
-local xl, xr = L(XT, "Client"), Rg(XT, "Performance & Hub")
+local XT = makeTab("Misc", "wrench")
+local xl, xr = box(XT, "Client", false), box(XT, "Performance", true)
 
 button(xl, "Teleport To Throw Line", function()
-    local hrp, cl = root(), crossLine()
-    if hrp then
-        if cl then hrp.CFrame = CFrame.new(hrp.Position.X, hrp.Position.Y + 2, cl.Position.Z - 8)
-        else hrp.CFrame = CFrame.new(0, 5.4, -42) end
-        pastLine = true
-        notify("Teleport", "Moved to throw line", 2)
-    end
+    if crossLine() then notify("Teleport", "At the throw line", 2)
+    else notify("Teleport", "Line not found", 3) end
 end)
 
 divider(xl)
@@ -1390,16 +1275,16 @@ button(xr, "Restore Graphics", function()
 end)
 
 --=================== TAB 5 : SETTINGS ===================
-local GT = Window:AddTab("Settings", "cog")
-local gl, gr = L(GT, "Hub"), Rg(GT, "Live Status")
+local GT = makeTab("Settings", "cog")
+local gl, gr = box(GT, "Hub", false), box(GT, "Live Status", true)
 
 label(gl, "MAKO Hub  V" .. HUB_VER)
 divider(gl)
+label(gl, "Keybind: " .. S.keybind.Name)
 
-label(gl, "UI Keybind - press the key, then click the box")
-keyPicker(gl, "Keybind", "Toggle UI Key", "RightShift", function(v)
-    local kc = type(v) == "string" and Enum.KeyCode[v] or v
-    if typeof(kc) == "EnumItem" then S.keybind = kc end
+button(gl, "Change Keybind", function()
+    getgenv().MakoListening = true
+    notify("Keybind", "Press any key now", 5)
 end)
 
 divider(gl)
@@ -1428,7 +1313,7 @@ button(gl, "Unload Hub", function()
     dim.Parent = gui
 
     local card = Instance.new("Frame")
-    card.Size = UDim2.fromOffset(380, 200)
+    card.Size = UDim2.fromOffset(380, 190)
     card.Position = UDim2.fromScale(0.5, 0.5)
     card.AnchorPoint = Vector2.new(0.5, 0.5)
     card.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
@@ -1437,9 +1322,7 @@ button(gl, "Unload Hub", function()
     Instance.new("UICorner", card).CornerRadius = UDim.new(0, 10)
 
     local stroke = Instance.new("UIStroke")
-    stroke.Color = ACCENT
-    stroke.Thickness = 1.5
-    stroke.Transparency = 0.2
+    stroke.Color = ACCENT stroke.Thickness = 1.5 stroke.Transparency = 0.2
     stroke.Parent = card
 
     local title = Instance.new("TextLabel")
@@ -1454,10 +1337,10 @@ button(gl, "Unload Hub", function()
     title.Parent = card
 
     local body = Instance.new("TextLabel")
-    body.Size = UDim2.new(1, -30, 0, 76)
+    body.Size = UDim2.new(1, -30, 0, 70)
     body.Position = UDim2.new(0, 15, 0, 48)
     body.BackgroundTransparency = 1
-    body.Text = "This closes the interface and shuts down every running system. Graphics go back to normal, all automation stops, and the game continues untouched."
+    body.Text = "This closes the interface and stops every running system. Graphics return to normal."
     body.TextColor3 = Color3.fromRGB(190, 196, 210)
     body.Font = Enum.Font.Gotham
     body.TextSize = 13
@@ -1468,8 +1351,8 @@ button(gl, "Unload Hub", function()
 
     local function makeBtn(text, x, color, cb)
         local b = Instance.new("TextButton")
-        b.Size = UDim2.fromOffset(165, 38)
-        b.Position = UDim2.fromOffset(x, 148)
+        b.Size = UDim2.fromOffset(165, 36)
+        b.Position = UDim2.fromOffset(x, 140)
         b.BackgroundColor3 = color
         b.Text = text
         b.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1490,8 +1373,8 @@ button(gl, "Unload Hub", function()
         S.autoBuy=false S.autoUpStand=false S.autoUpFence=false
         pcall(invoke, "Training_Stop")
         pcall(invoke, "Throw_Cancel")
-        uninstallMeter()
-        unhookController()
+        uninstallPerfect()
+        uninstallSkip()
         if S.fpsBoost then setFps(false) end
         pcall(function() RunService:Set3dRenderingEnabled(true) end)
         if afkConn then afkConn:Disconnect() end
@@ -1503,8 +1386,8 @@ button(gl, "Unload Hub", function()
 end)
 
 local actLabel, moneyLabelObj
-pcall(function() actLabel = gr:AddLabel("Activity : Idle") end)
-pcall(function() moneyLabelObj = gr:AddLabel("Money : -") end)
+pcall(function() actLabel = gr and gr:AddLabel("Activity : Idle") end)
+pcall(function() moneyLabelObj = gr and gr:AddLabel("Money : -") end)
 
 local function setText(obj, txt)
     if not obj then return end
@@ -1524,12 +1407,14 @@ task.spawn(function()
     end
 end)
 
-label(gr, "Identity : " .. tostring(CHOSEN_IDENTITY))
-label(gr, "Remotes : " .. (RemotesFolder and "OK" or "MISSING"))
-
 UserInputService.InputBegan:Connect(function(i, gp)
     if gp then return end
-    if keyPickerWorks then return end
+    if getgenv().MakoListening then
+        getgenv().MakoListening = false
+        S.keybind = i.KeyCode
+        notify("Keybind", "Toggle set to " .. i.KeyCode.Name, 4)
+        return
+    end
     if i.KeyCode == S.keybind then pcall(function() Library:Toggle() end) end
 end)
 
@@ -1537,10 +1422,11 @@ end)
 -- INIT
 --=====================================================================
 loadExpiry()
-installMeter()
-hookController()
+installPerfect()
+installSkip()
 standRef.value = readLvl({"Stand","StandLevel","Bar","BarLevel"}, 0)
 fenceRef.value = readLvl({"FenceLevel","Fence","PlotFence"}, 0)
+if S.autoTap then startTap() end
 task.spawn(function()
     refreshFoodNames()
     if foodDropdown then
@@ -1552,6 +1438,6 @@ end)
 
 task.delay(1, function()
     if unloaded then return end
-    notify("MAKO Hub V" .. HUB_VER, "Loaded. Press " .. tostring(S.keybind.Name) .. " to toggle the UI.", 5)
+    notify("MAKO Hub V" .. HUB_VER, "Loaded. Press " .. S.keybind.Name .. " to toggle.", 5)
 end)
-print("[MAKO] V" .. HUB_VER .. " loaded | identity " .. tostring(CHOSEN_IDENTITY))
+print("[MAKO] V" .. HUB_VER .. " loaded")
