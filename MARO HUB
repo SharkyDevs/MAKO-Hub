@@ -5,7 +5,7 @@
     ██║╚██╔╝██║██╔══██║██╔═██╗ ██║   ██║    ██╔══██║██║   ██║██╔══██╗
     ██║ ╚═╝ ██║██║  ██║██║  ██╗╚██████╔╝    ██║  ██║╚██████╔╝██████╔╝
     ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝     ╚═╝  ╚═╝ ╚═════╝ ╚═════╝
-    MAKO Hub  V1.1.1   |   Throw Food For Animals   |   Obsidian
+    MAKO Hub  V1.1.2   |   Throw Food For Animals   |   by RnxDevs
 ]]
 
 print("[MAKO] boot")
@@ -17,9 +17,9 @@ end
 
 local PLACE_ID    = 120219252362013
 local GAME_NAME   = "Throw Food For Animals"
-local HUB_VER     = "1.1.1"
-local LOGO        = "rbxassetid://130594491959936"
-local DISCORD_IMG = "rbxassetid://7252686258"
+local HUB_VER     = "1.1.2"
+local CREDIT      = "RnxDevs"
+local LOGO_ID     = 130594491959936
 local INVITE_LINK = "https://discord.gg/XndUu744x"
 local LINK_LIFE   = 30 * 24 * 60 * 60
 local ACCENT      = Color3.fromRGB(0, 170, 255)
@@ -121,6 +121,15 @@ local function invoke(n, ...)
     return nil
 end
 
+local function fire(n, ...)
+    local a = {...}
+    local r = rObj(n)
+    if r then
+        if r:IsA("RemoteEvent") then pcall(function() r:FireServer(unpack(a)) end)
+        else pcall(function() r:InvokeServer(unpack(a)) end) end
+    end
+end
+
 local hasRemote = function(n) return rObj(n) ~= nil end
 local function okRes(r) return type(r) == "table" and r.Ok == true or r == true end
 
@@ -186,7 +195,6 @@ local S = {
 
 local R = { throw=false, tap=false, equip=false, sell=false, buy=false, stand=false, fence=false }
 
-local laneX
 local standRef = { value = 0 }
 local fenceRef = { value = 0 }
 local upBackoff = { stand = 0, fence = 0 }
@@ -217,12 +225,6 @@ local function shortNum(n)
         if n >= u[1] then return string.format("%.1f%s", n / u[1], u[2]) end
     end
     return tostring(math.floor(n))
-end
-
-local function ago(sec)
-    if sec < 3600 then return math.max(1, math.floor(sec / 60)) .. "m ago" end
-    if sec < 86400 then return math.floor(sec / 3600) .. "h ago" end
-    return math.floor(sec / 86400) .. "d ago"
 end
 
 --=====================================================================
@@ -325,12 +327,37 @@ end
 --=====================================================================
 local origReveal
 
+local function clearReveal()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pg then return end
+    for _, d in ipairs(pg:GetChildren()) do
+        local low = d.Name:lower()
+        if d:IsA("ScreenGui") and (low:find("reveal") or low:find("catch") or low:find("cutscene")) then
+            pcall(function() d.Enabled = false end)
+        end
+    end
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d:IsA("Frame") and d.Visible then
+            local low = d.Name:lower()
+            if low == "white" or low:find("flash") or low:find("fade") or low:find("overlay") then
+                pcall(function() d.Visible = false end)
+            end
+        end
+    end
+end
+
 local function installSkip()
     pcall(function()
         if not RevealSequence or origReveal then return end
         if type(RevealSequence.Run) ~= "function" then return end
         origReveal = RevealSequence.Run
-        RevealSequence.Run = function() end
+        RevealSequence.Run = function(...)
+            if S.skipCutscene then
+                task.spawn(function() task.wait(0.05) clearReveal() end)
+                return
+            end
+            return origReveal(...)
+        end
     end)
 end
 
@@ -339,84 +366,158 @@ local function uninstallSkip()
         if RevealSequence and origReveal then RevealSequence.Run = origReveal end
         origReveal = nil
     end)
+    clearReveal()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if pg then
+        for _, d in ipairs(pg:GetChildren()) do
+            local low = d.Name:lower()
+            if d:IsA("ScreenGui") and (low:find("reveal") or low:find("catch")) then
+                pcall(function() d.Enabled = true end)
+            end
+        end
+    end
 end
 
 --=====================================================================
--- THROW
+-- THROW LINE  (workspace.StarterArea.CrossLine, smooth, walang anchor)
 --=====================================================================
+local function crossLinePart()
+    local area = workspace:FindFirstChild("StarterArea")
+    return area and area:FindFirstChild("CrossLine")
+end
+
 local function groundUnder(pos, ignore)
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
     params.FilterDescendantsInstances = ignore
-    local hit = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -300, 0), params)
+    local hit = workspace:Raycast(pos + Vector3.new(0, 60, 0), Vector3.new(0, -320, 0), params)
     return hit and hit.Position or nil
 end
 
-local function crossLine()
+local function goToLine()
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hrp or not hum or hum.Health <= 0 then return false end
-    local area = workspace:FindFirstChild("StarterArea")
-    local line = area and area:FindFirstChild("CrossLine")
+
+    local line = crossLinePart()
     if not line then return false end
-    if hum.SeatPart then pcall(function() hum.Sit = false end) task.wait(0.15) end
-    local halfX = area.Size.X / 2
-    local x = math.clamp(laneX or hrp.Position.X, area.Position.X - halfX + 2, area.Position.X + halfX - 2)
-    local z = line.Position.Z - 1.5
-    local ground = groundUnder(Vector3.new(x, area.Position.Y + area.Size.Y / 2, z), { char })
+
+    if hum.SeatPart then
+        pcall(function() hum.Sit = false end)
+        task.wait(0.12)
+    end
+
+    local area = line.Parent
+    local halfX = (area and area:IsA("BasePart")) and area.Size.X / 2 or 30
+    local cx = (area and area:IsA("BasePart")) and area.Position.X or line.Position.X
+    local x = math.clamp(hrp.Position.X, cx - halfX + 2, cx + halfX - 2)
+    local z = line.Position.Z - 1.2
+
+    local ground = groundUnder(Vector3.new(x, line.Position.Y + 20, z), { char })
     if not ground then return false end
-    local pos = ground + Vector3.new(0, hum.HipHeight + hrp.Size.Y / 2 + 0.1, 0)
-    char:PivotTo(CFrame.lookAt(pos, pos + Vector3.new(0, 0, -1)))
-    hrp.AssemblyLinearVelocity = Vector3.zero
-    hrp.AssemblyAngularVelocity = Vector3.zero
+
+    local stand = ground + Vector3.new(0, hum.HipHeight + hrp.Size.Y / 2 + 0.05, 0)
+    local target = CFrame.lookAt(stand, stand + Vector3.new(0, 0, -1))
+
+    -- smooth na paglipat, walang anchored
+    local start = hrp.CFrame
+    local steps = 6
+    for i = 1, steps do
+        if not hrp.Parent then break end
+        local a = i / steps
+        pcall(function() hrp.CFrame = start:Lerp(target, a) end)
+        task.wait(0.02)
+    end
+    pcall(function() hrp.CFrame = target end)
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end)
+    return true
+end
+
+local function stepBack()
+    local hrp = root()
+    local line = crossLinePart()
+    if hrp and line then
+        pcall(function()
+            hrp.CFrame = CFrame.new(hrp.Position.X, hrp.Position.Y + 1, line.Position.Z + 4)
+        end)
+    end
+end
+
+--=====================================================================
+-- THROW LOOP
+--=====================================================================
+local function remoteThrow()
+    local sres = invoke("Throw_Start")
+    if not (okRes(sres) or sres == nil) then return false end
+    local value = 1
+    if not S.autoPerfect then value = math.random(45, 92) / 100 end
+    local rres = invoke("Throw_Resolve", value)
+    if not (okRes(rres) or rres == nil) then return false end
+    fire("Throw_Complete")
     return true
 end
 
 local function throwLoop()
     while S.autoThrow and not unloaded do
+        -- hintayin matapos ang anumang ginagawa ng laro
         local t0 = os.clock()
-        while S.autoThrow and busy() and os.clock() - t0 < 30 do task.wait(0.2) end
+        while S.autoThrow and busy() and os.clock() - t0 < 25 do task.wait(0.15) end
         if not S.autoThrow then break end
 
         local started = false
-        for _ = 1, 4 do
+        for _ = 1, 3 do
             if not S.autoThrow then break end
-            crossLine()
+            goToLine()
             local t1 = os.clock()
-            while os.clock() - t1 < 3 do
+            while os.clock() - t1 < 1.0 do
                 if ClientState and ClientState.Busy == "Throw" then started = true break end
-                task.wait(0.08)
+                task.wait(0.05)
             end
             if started then break end
         end
 
-        if started then
-            local t2 = os.clock()
-            while S.autoThrow and ClientState and ClientState.Busy == "Throw" and os.clock() - t2 < 30 do
-                task.wait(0.15)
+        if not started then
+            pcall(remoteThrow)
+            local t1b = os.clock()
+            while S.autoThrow and ClientState and ClientState.Busy == "Throw" and os.clock() - t1b < 5 do
+                task.wait(0.08)
             end
-            local t3 = os.clock()
-            while S.autoThrow and busy() and os.clock() - t3 < 10 do task.wait(0.1) end
-            task.wait(0.25)
-        else
-            task.wait(0.8)
         end
+
+        local t2 = os.clock()
+        while S.autoThrow and busy() and os.clock() - t2 < 20 do task.wait(0.1) end
+        if S.skipCutscene then clearReveal() end
+        task.wait(0.2)
     end
     R.throw = false
 end
 
 local function startThrow()
-    if R.throw then return end
+    if R.throw then
+        S.autoThrow = true
+        return
+    end
+    if not hasRemote("Throw_Start") then notify("Auto Throw", "Throw_Start missing", 4) return end
+    S.autoThrow = true
     R.throw = true
     installPerfect()
     if S.skipCutscene then installSkip() end
     pcall(invoke, "Player_SetThrowPower", 999999999)
-    if not laneX then
-        local hrp = root()
-        if hrp then laneX = hrp.Position.X end
-    end
     task.spawn(throwLoop)
+end
+
+local function stopThrow()
+    S.autoThrow = false
+    task.spawn(function()
+        task.wait(0.6)
+        if not S.skipCutscene then uninstallSkip() else clearReveal() end
+        pcall(invoke, "Throw_Cancel")
+        stepBack()
+    end)
 end
 
 --=====================================================================
@@ -612,7 +713,7 @@ local function startBuy()
 end
 
 --=====================================================================
--- UPGRADES (instant)
+-- UPGRADES
 --=====================================================================
 local function readLvl(keys, fb)
     if DataController and DataController.Get then
@@ -735,25 +836,42 @@ local function buildPetList()
 end
 
 --=====================================================================
--- MISC
+-- ANTI AFK
 --=====================================================================
+local afkThread
 local afkConn
+
 local function setAntiAfk(on)
     if on then
-        if afkConn then return end
+        if afkThread then return end
         afkConn = LocalPlayer.Idled:Connect(function()
-            if not S.antiAfk then return end
             pcall(function()
                 VirtualUser:CaptureController()
                 VirtualUser:ClickButton2(Vector2.new())
             end)
         end)
-    elseif afkConn then
-        afkConn:Disconnect()
-        afkConn = nil
+        afkThread = task.spawn(function()
+            while S.antiAfk and not unloaded do
+                pcall(function()
+                    VirtualUser:CaptureController()
+                    VirtualUser:ClickButton2(Vector2.new())
+                    VirtualUser:SetKeyDown("w")
+                    task.wait(0.1)
+                    VirtualUser:SetKeyUp("w")
+                end)
+                task.wait(40)
+            end
+            afkThread = nil
+        end)
+    else
+        if afkConn then afkConn:Disconnect() afkConn = nil end
+        afkThread = nil
     end
 end
 
+--=====================================================================
+-- PERFORMANCE
+--=====================================================================
 local fpsSaved = {}
 local function setFps(on)
     if on then
@@ -854,14 +972,19 @@ end
 local EXPIRY_FILE = "MakoHub_discord_expiry.txt"
 local expiry = 0
 
+local function saveExpiry(v)
+    expiry = v
+    pcall(function() writefile(EXPIRY_FILE, tostring(v)) end)
+end
+
 local function loadExpiry()
     local ok, raw = pcall(function() return readfile(EXPIRY_FILE) end)
-    if ok and raw then
-        local n = tonumber(raw)
-        if n and n > 0 then expiry = n return end
+    local n = ok and tonumber(raw) or nil
+    if not n or n <= os.time() then
+        saveExpiry(os.time() + LINK_LIFE)
+        return
     end
-    expiry = os.time() + LINK_LIFE
-    pcall(function() writefile(EXPIRY_FILE, tostring(expiry)) end)
+    expiry = n
 end
 
 local function timeLeft() return expiry - os.time() end
@@ -933,36 +1056,30 @@ do
         return Library:CreateWindow({
             Title = "MAKO Hub",
             Subtitle = GAME_NAME .. "  ·  V" .. HUB_VER,
+            Icon = LOGO_ID,
             ShowConsoleButton = false,
             Resizable = true,
         })
     end)
-    if ok and w then Window = w else Window = Library:CreateWindow({ Title = "MAKO Hub" }) end
+    if ok and w then Window = w
+    else Window = Library:CreateWindow({ Title = "MAKO Hub", Icon = LOGO_ID }) end
 end
 getgenv().MakoHub = Library
 print("[MAKO] window ok")
 
--- robust na tab creation: sinusubukan lahat ng paraan
 local ICON_TRIES = {"circle", "dot", "square", "box", "home", "bolt"}
 
 local function makeTab(name, preferred)
     local list = { preferred }
     for _, ic in ipairs(ICON_TRIES) do list[#list + 1] = ic end
-
     for _, ic in ipairs(list) do
         if ic then
             local ok, t = pcall(function() return Window:AddTab(name, ic) end)
-            if ok and t then
-                print("[MAKO] tab " .. name .. " ok (" .. ic .. ")")
-                return t
-            end
+            if ok and t then print("[MAKO] tab " .. name .. " ok") return t end
         end
     end
     local ok, t = pcall(function() return Window:AddTab(name) end)
-    if ok and t then
-        print("[MAKO] tab " .. name .. " ok (no icon)")
-        return t
-    end
+    if ok and t then print("[MAKO] tab " .. name .. " ok (no icon)") return t end
     print("[MAKO] tab " .. name .. " FAILED")
 end
 
@@ -975,7 +1092,6 @@ local function box(t, name, right)
 end
 
 task.spawn(function()
-    pcall(function() Window:SetIcon(LOGO) end)
     for _, name in ipairs({"Ocean","Sky","Blue","Aqua","Default"}) do
         if pcall(function() Library.ThemeManager:SetTheme(name) end) then break end
     end
@@ -1016,30 +1132,11 @@ end)
 label(ml, LocalPlayer.DisplayName)
 label(ml, "@" .. LocalPlayer.Name)
 label(ml, "Playing " .. GAME_NAME)
-
 divider(ml)
-label(ml, "Changelog  V" .. HUB_VER)
-
-local CHANGELOG = {
-    {2,    "Added",   "Profile card"},
-    {7,    "Added",   "Discord panel"},
-    {16,   "Added",   "Auto skip cutscene"},
-    {40,   "Fixed",   "Auto Perfect locks at max"},
-    {95,   "Fixed",   "Auto Train runs normally"},
-    {160,  "Fixed",   "Auto Tap works without training"},
-    {260,  "Fixed",   "Tabs now load properly"},
-    {1500, "Changed", "Upgrades are instant"},
-    {2900, "Changed", "Equip has a cooldown"},
-}
-
-for _, e in ipairs(CHANGELOG) do
-    label(ml, e[2] .. "  " .. ago(e[1]))
-    label(ml, "   " .. e[3])
-end
+label(ml, "Created by " .. CREDIT)
 
 label(mr, "MAKO Hub Discord")
 label(mr, "Updates and fixes drop here first.")
-label(mr, "Join while the door is open.")
 divider(mr)
 label(mr, INVITE_LINK)
 label(mr, "Valid: " .. expiryText())
@@ -1061,9 +1158,8 @@ local FT = makeTab("Farm", "bolt")
 local fl, fr = box(FT, "Auto Throw", false), box(FT, "Train & Upgrade", true)
 
 toggle(fl, "AutoThrow", "Auto Throw", false, function(v)
-    S.autoThrow = v
-    if v then startThrow() else pcall(invoke, "Throw_Cancel") end
-end, "Walks to the line, perfect throw, skips cutscene")
+    if v then startThrow() else stopThrow() end
+end, "Walks to the CrossLine, perfect throw, skips cutscene")
 
 toggle(fl, "AutoPerfect", "Auto Perfect", true, function(v)
     S.autoPerfect = v
@@ -1073,31 +1169,14 @@ end, "Locks the meter at maximum")
 toggle(fl, "SkipCutscene", "Auto Skip Cutscene", true, function(v)
     S.skipCutscene = v
     if v then installSkip() else uninstallSkip() end
-end, "Ends the reveal instantly")
+end, "Skips the reveal and clears the white flash")
 
-divider(fl)
-button(fl, "Set Throw Lane Here", function()
-    local hrp = root()
-    if hrp then
-        laneX = hrp.Position.X
-        notify("Throw Lane", "Lane saved at X " .. math.floor(laneX), 3)
-    end
-end)
 button(fl, "Throw Once", function()
     if S.autoThrow then return end
-    S.autoThrow = true
     startThrow()
     task.delay(8, function()
-        if S.autoThrow and R.throw then S.autoThrow = false end
+        if S.autoThrow and R.throw then stopThrow() end
     end)
-end)
-button(fl, "Use Super Throw", function()
-    invoke("Throw_UseSuper")
-    notify("Throw", "Super throw used", 2)
-end)
-button(fl, "Set Max Throw Power", function()
-    pcall(invoke, "Player_SetThrowPower", 999999999)
-    notify("Throw", "Throw power maximized", 2)
 end)
 
 toggle(fr, "AutoTrain", "Auto Train", false, function(v)
@@ -1245,12 +1324,6 @@ end)
 local XT = makeTab("Misc", "wrench")
 local xl, xr = box(XT, "Client", false), box(XT, "Performance", true)
 
-button(xl, "Teleport To Throw Line", function()
-    if crossLine() then notify("Teleport", "At the throw line", 2)
-    else notify("Teleport", "Line not found", 3) end
-end)
-
-divider(xl)
 toggle(xl, "AntiAfk", "Anti AFK", false, function(v) S.antiAfk = v setAntiAfk(v) end)
 toggle(xl, "AntiKick", "Auto Rejoin On Kick", false, function(v) S.antiKick = v setAntiKick(v) end)
 
@@ -1279,6 +1352,7 @@ local GT = makeTab("Settings", "cog")
 local gl, gr = box(GT, "Hub", false), box(GT, "Live Status", true)
 
 label(gl, "MAKO Hub  V" .. HUB_VER)
+label(gl, "by " .. CREDIT)
 divider(gl)
 label(gl, "Keybind: " .. S.keybind.Name)
 
@@ -1294,6 +1368,7 @@ button(gl, "PANIC (Disable Everything)", function()
     S.autoBuy=false S.autoUpStand=false S.autoUpFence=false
     pcall(invoke, "Training_Stop")
     pcall(invoke, "Throw_Cancel")
+    clearReveal()
     notify("Panic", "All automation disabled", 4)
 end)
 
@@ -1385,6 +1460,37 @@ button(gl, "Unload Hub", function()
     end)
 end)
 
+divider(gr)
+label(gr, "Changelog")
+
+local CHANGELOG = {
+    {"V1.1.2", {
+        "Auto Throw fixed, works from first toggle",
+        "Teleport uses CrossLine smoothly",
+        "Hub logo restored",
+        "Farm buttons trimmed",
+    }},
+    {"V1.1.1", {
+        "White screen after skip fixed",
+        "Auto Throw and Skip fully stop",
+        "Anti AFK rewritten",
+        "Invite timer self heals",
+    }},
+    {"V1.1.0", {
+        "Main tab with profile and Discord",
+        "Auto skip cutscene",
+        "Instant upgrades",
+        "Equip cooldown",
+    }},
+}
+
+for _, block in ipairs(CHANGELOG) do
+    label(gr, block[1])
+    for _, line in ipairs(block[2]) do
+        label(gr, "  ·  " .. line)
+    end
+end
+
 local actLabel, moneyLabelObj
 pcall(function() actLabel = gr and gr:AddLabel("Activity : Idle") end)
 pcall(function() moneyLabelObj = gr and gr:AddLabel("Money : -") end)
@@ -1440,4 +1546,4 @@ task.delay(1, function()
     if unloaded then return end
     notify("MAKO Hub V" .. HUB_VER, "Loaded. Press " .. S.keybind.Name .. " to toggle.", 5)
 end)
-print("[MAKO] V" .. HUB_VER .. " loaded")
+print("[MAKO] V" .. HUB_VER .. " loaded | by " .. CREDIT)
